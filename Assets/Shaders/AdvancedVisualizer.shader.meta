@@ -1,0 +1,11 @@
+fileFormatVersion: 2
+guid: 329d0c76161dc704c8d10c0270f5f28a
+ShaderImporter:
+  externalObjects: {}
+  defaultTextures:
+  - _ParticleTex: {instanceID: 0}
+  - _GasTex: {instanceID: 0}
+  nonModifiableTextures: []
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 

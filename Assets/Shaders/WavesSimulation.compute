@@ -1,0 +1,323 @@
+#pragma kernel SimulateWawes
+#pragma kernel SpawnWawes
+#pragma kernel InitializeTexture
+#pragma kernel InitializeWithTriangle
+#pragma kernel SpawnWawesRow
+#pragma kernel SpawnWawesColumn
+#pragma kernel SpawnWalls
+#pragma kernel SpawnDirectionalWave
+
+// ===== ТЕКСТУРЫ =====
+// Двойная буферизация для каждой текстуры
+// Amplitude: RGB = амплитуды для R,G,B каналов; A = скорость распространения волны
+// Velocity: RGB = скорости для R,G,B каналов; A = не используется
+RWTexture2D<float4> _AmpOutput;     // Амплитуды (запись)
+Texture2D<float4> _AmpInput;        // Амплитуды (чтение)
+RWTexture2D<float4> _VelOutput;     // Скорости (запись)
+Texture2D<float4> _VelInput;        // Скорости (чтение)
+
+// Параметры кисти
+int2 _BrushPosition;
+float _BrushRadius;
+float _BrushValue;
+float _WawesSpeed;
+
+// Параметры
+int _Width;
+int _Height;
+float _DeltaTime;
+
+// Параметры поглощающей зоны
+float _AbsorbingZoneWidth;
+float _AbsorbingStrength;
+
+// Параметры треугольника
+float _TriangleSize;
+float _TriangleWaveSpeed;
+float _DefaultWaveSpeed;
+
+// Параметры направленного источника волн
+float _DirectionalAngle;
+float _DirectionalFrequencyR;  // Частота для красного канала
+float _DirectionalFrequencyG;  // Частота для зеленого канала
+float _DirectionalFrequencyB;  // Частота для синего канала
+float _DirectionalSize;
+float _DirectionalAmplitude;
+float _Time;
+
+float _WawesSpeedDelta;
+
+// ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
+
+bool InBounds(int2 pos)
+{
+    return pos.x >= 0 && pos.x < _Width && pos.y >= 0 && pos.y < _Height;
+}
+
+float4 GetAmp(int2 pos)
+{
+    pos.x = clamp(pos.x, 0, _Width - 1);
+    pos.y = clamp(pos.y, 0, _Height - 1);
+    return _AmpInput[pos];
+}
+
+float4 GetVel(int2 pos)
+{
+    pos.x = clamp(pos.x, 0, _Width - 1);
+    pos.y = clamp(pos.y, 0, _Height - 1);
+    return _VelInput[pos];
+}
+
+float GetAbsorbingFactor(int2 pos)
+{
+    if (_AbsorbingZoneWidth <= 0) return 0.0;
+    
+    float distLeft = pos.x;
+    float distRight = (_Width - 1) - pos.x;
+    float distBottom = pos.y;
+    float distTop = (_Height - 1) - pos.y;
+    
+    float minDist = min(min(distLeft, distRight), min(distBottom, distTop));
+    
+    if (minDist < _AbsorbingZoneWidth)
+    {
+        float t = 1.0 - (minDist / _AbsorbingZoneWidth);
+        return t * t;
+    }
+    
+    return 0.0;
+}
+
+// Лапласиан для 3-х каналов (RGB)
+float3 GetLaplacian3(int2 pos)
+{
+    float3 ampCenter = GetAmp(pos).rgb;
+    float3 ampRight = GetAmp(pos + int2(1, 0)).rgb;
+    float3 ampLeft = GetAmp(pos + int2(-1, 0)).rgb;
+    float3 ampUp = GetAmp(pos + int2(0, 1)).rgb;
+    float3 ampDown = GetAmp(pos + int2(0, -1)).rgb;
+    
+    return ampRight + ampLeft + ampUp + ampDown - 4.0 * ampCenter;
+}
+
+// Матрица поворота 2D
+float2 Rotate2D(float2 p, float a)
+{
+    float s = sin(a);
+    float c = cos(a);
+    return float2(p.x * c - p.y * s, p.x * s + p.y * c);
+}
+
+// Направленная волна с гауссовским профилем для одного канала
+// Основано на circleWave - поворачиваем систему координат, затем применяем косинус по X
+float DirectionalWaveSingle(float2 pt, float2 sourcePosition, float dir, float frequency, float sz)
+{
+    // Переводим в локальную систему координат источника
+    // Центр = sourcePosition, ось X повернута на угол dir
+    float2 localPt = Rotate2D(pt - sourcePosition, -dir);
+    
+    // Расстояние от источника (для гауссовского затухания)
+    float r = dot(localPt, localPt);
+    
+    // Гауссовское затухание - убывает с расстоянием от источника
+    float fade = exp(-r / (2.0 * sz * sz)) / sz;
+    
+    // Косинус создает плоские волны перпендикулярно направлению dir
+    // localPt.x - расстояние вдоль направления распространения
+    // abs(sin()) - волна всегда положительная, как в оригинале
+    float wave = fade * cos(frequency * localPt.x) * abs(sin(_Time * 3.0));
+    
+    return wave;
+}
+
+// ===== ЯДРА =====
+
+[numthreads(8,8,1)]
+void SimulateWawes (uint3 id : SV_DispatchThreadID)
+{
+    int2 pos = int2(id.xy);
+
+    if (!InBounds(pos))
+    {
+        return;
+    }
+
+    float4 amp = GetAmp(pos);      // RGB = амплитуды, A = скорость распространения
+    float4 vel = GetVel(pos);      // RGB = скорости
+    
+    float3 laplacian = GetLaplacian3(pos);
+    float3 waveSpeedSq = amp.a * amp.a;  // Скорость распространения общая для всех каналов
+    waveSpeedSq.r += waveSpeedSq.r * _WawesSpeedDelta;
+    waveSpeedSq.b -= waveSpeedSq.b * _WawesSpeedDelta;
+    
+    // Ускорение для каждого канала
+    float3 acceleration = waveSpeedSq * laplacian;
+    vel.rgb += acceleration * _DeltaTime;
+
+    // Поглощающая зона - затухание у границ
+    float absorbFactor = GetAbsorbingFactor(pos);
+    if (absorbFactor > 0.0)
+    {
+        float damping = exp(-_AbsorbingStrength * absorbFactor * _DeltaTime * 100.0);
+        vel.rgb *= damping;
+        amp.rgb *= damping;
+    }
+
+    amp.rgb += vel.rgb * _DeltaTime;
+
+    _AmpOutput[id.xy] = amp;
+    _VelOutput[id.xy] = vel;
+}
+
+// Инициализация текстур
+[numthreads(8, 8, 1)]
+void InitializeTexture(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_Width || id.y >= (uint)_Height) return;
+    
+    // RGB = 0 (нет амплитуды), A = скорость распространения по умолчанию
+    _AmpOutput[id.xy] = float4(0, 0, 0, 20);
+    // RGB = 0 (нет скорости)
+    _VelOutput[id.xy] = float4(0, 0, 0, 0);
+}
+
+// Проверка точки внутри треугольника
+bool PointInTriangle(float2 p, float2 v0, float2 v1, float2 v2)
+{
+    float2 v0v1 = v1 - v0;
+    float2 v0v2 = v2 - v0;
+    float2 v0p = p - v0;
+    
+    float dot00 = dot(v0v2, v0v2);
+    float dot01 = dot(v0v2, v0v1);
+    float dot02 = dot(v0v2, v0p);
+    float dot11 = dot(v0v1, v0v1);
+    float dot12 = dot(v0v1, v0p);
+    
+    float invDenom = 1.0 / (dot00 * dot11 - dot01 * dot01);
+    float u = (dot11 * dot02 - dot01 * dot12) * invDenom;
+    float v = (dot00 * dot12 - dot01 * dot02) * invDenom;
+    
+    return (u >= 0) && (v >= 0) && (u + v <= 1);
+}
+
+// Инициализация с треугольником
+[numthreads(8, 8, 1)]
+void InitializeWithTriangle(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_Width || id.y >= (uint)_Height) return;
+    
+    float2 pos = float2(id.xy);
+    float2 center = float2(_Width * 0.5, _Height * 0.5);
+    
+    float h = _TriangleSize;
+    float side = h * 2.0 / sqrt(3.0);
+    
+    float2 v0 = center + float2(0, h * 2.0 / 3.0);
+    float2 v1 = center + float2(-side / 2.0, -h / 3.0);
+    float2 v2 = center + float2(side / 2.0, -h / 3.0);
+    
+    float waveSpeed = _DefaultWaveSpeed;
+    
+    if (PointInTriangle(pos, v0, v1, v2))
+    {
+        waveSpeed = _TriangleWaveSpeed;
+    }
+    
+    _AmpOutput[id.xy] = float4(0, 0, 0, waveSpeed);
+    _VelOutput[id.xy] = float4(0, 0, 0, 0);
+}
+
+// Спавн волн (точечный) - белый свет (все каналы)
+[numthreads(8, 8, 1)]
+void SpawnWawes(uint3 id : SV_DispatchThreadID)
+{
+    int2 pos = int2(id.xy);
+    if (!InBounds(pos)) return;
+    
+    float dist = length(float2(pos) - float2(_BrushPosition));
+    
+    if (dist < _BrushRadius)
+    {        
+        float4 vel = _VelOutput[pos];
+        vel.rgb = float3(_BrushValue, _BrushValue, _BrushValue);  // Все каналы одинаково
+        _VelOutput[pos] = vel;
+    }
+}
+
+// Спавн стен (изменение скорости распространения)
+[numthreads(8, 8, 1)]
+void SpawnWalls(uint3 id : SV_DispatchThreadID)
+{
+    int2 pos = int2(id.xy);
+    if (!InBounds(pos)) return;
+    
+    float dist = length(float2(pos) - float2(_BrushPosition));
+    
+    if (dist < _BrushRadius)
+    {        
+        float4 amp = _AmpOutput[pos];
+        amp.a = _WawesSpeed;  // Изменяем скорость распространения
+        _AmpOutput[pos] = amp;
+    }
+}
+
+// Спавн волн (горизонтальная линия)
+[numthreads(8, 8, 1)]
+void SpawnWawesRow(uint3 id : SV_DispatchThreadID)
+{
+    int2 pos = int2(id.xy);
+    if (!InBounds(pos)) return;
+    
+    float dist = abs(float(pos.y) - float(_BrushPosition.y));
+    
+    if (dist < _BrushRadius)
+    {        
+        float4 vel = _VelOutput[pos];
+        vel.rgb = float3(_BrushValue, _BrushValue, _BrushValue);
+        _VelOutput[pos] = vel;
+    }
+}
+
+// Спавн волн (вертикальная линия)
+[numthreads(8, 8, 1)]
+void SpawnWawesColumn(uint3 id : SV_DispatchThreadID)
+{
+    int2 pos = int2(id.xy);
+    if (!InBounds(pos)) return;
+    
+    float dist = abs(float(pos.x) - float(_BrushPosition.x));
+    
+    if (dist < _BrushRadius)
+    {        
+        float4 vel = _VelOutput[pos];
+        vel.rgb = float3(_BrushValue, _BrushValue, _BrushValue);
+        _VelOutput[pos] = vel;
+    }
+}
+
+// Направленный источник волн с разными частотами для RGB
+[numthreads(8, 8, 1)]
+void SpawnDirectionalWave(uint3 id : SV_DispatchThreadID)
+{
+    int2 pos = int2(id.xy);
+    if (!InBounds(pos)) return;
+    
+    float2 sourcePos = float2(_BrushPosition);
+    float2 currentPos = float2(pos);
+    
+    // Вычисляем волну для каждого канала с разной частотой
+    float waveR = DirectionalWaveSingle(currentPos, sourcePos, _DirectionalAngle, _DirectionalFrequencyR, _DirectionalSize) * _DirectionalAmplitude;
+    float waveG = DirectionalWaveSingle(currentPos, sourcePos, _DirectionalAngle, _DirectionalFrequencyG, _DirectionalSize) * _DirectionalAmplitude;
+    float waveB = DirectionalWaveSingle(currentPos, sourcePos, _DirectionalAngle, _DirectionalFrequencyB, _DirectionalSize) * _DirectionalAmplitude;
+    
+    // Применяем только если значение значимое
+    if (abs(waveR) > 0.001 || abs(waveG) > 0.001 || abs(waveB) > 0.001)
+    {
+        float4 vel = _VelOutput[pos];
+        vel.r += waveR;
+        vel.g += waveG;
+        vel.b += waveB;
+        _VelOutput[pos] = vel;
+    }
+}

@@ -1,0 +1,285 @@
+#pragma kernel AdvectGas
+#pragma kernel DiffuseGas
+#pragma kernel ApplyForces
+#pragma kernel AddGasSource
+#pragma kernel InitializeTexture
+#pragma kernel SpawnParticle
+#pragma kernel SpawnGasAtPoint
+#pragma kernel EraseAtPoint
+
+// Текстуры газа (double buffering)
+RWTexture2D<float4> _GasOutput;
+Texture2D<float4> _GasInput;
+
+// Текстура частиц (для взаимодействия)
+Texture2D<float4> _ParticlesTex;
+// Дополнительные текстуры для спавна
+RWTexture2D<float4> _ParticleOutput;
+
+// Сэмплер для билинейной интерполяции
+SamplerState sampler_linear_clamp;
+
+// Параметры кисти
+int2 _BrushPosition;
+float _BrushRadius;
+float _BrushStrength;
+int _BrushType;  // 0=sand, 1=gas, 2=erase
+
+// Параметры
+int _Width;
+int _Height;
+float _DeltaTime;
+float _AdvectionSpeed;
+float _Diffusion;
+float _Dissipation;    // Затухание
+float _Gravity;
+float _Buoyancy;
+
+// Источник газа
+int2 _SourcePosition;
+float _SourceRadius;
+float _SourceStrength;
+float2 _SourceVelocity;
+
+// ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
+
+bool InBounds(int2 pos)
+{
+    return pos.x >= 0 && pos.x < _Width && pos.y >= 0 && pos.y < _Height;
+}
+
+float4 GetGas(int2 pos)
+{
+    if (!InBounds(pos)) return float4(0, 0.5, 0.5, 0);
+    return _GasInput[pos];
+}
+
+// Билинейная интерполяция для advection
+float4 SampleGasBilinear(float2 pos)
+{
+    // Ограничиваем координаты
+    pos = clamp(pos, float2(0.5, 0.5), float2(_Width - 1.5, _Height - 1.5));
+    
+    // Целые координаты углов
+    int2 p00 = int2(floor(pos));
+    int2 p10 = p00 + int2(1, 0);
+    int2 p01 = p00 + int2(0, 1);
+    int2 p11 = p00 + int2(1, 1);
+    
+    // Дробная часть для интерполяции
+    float2 f = frac(pos);
+    
+    // Читаем 4 угла
+    float4 v00 = GetGas(p00);
+    float4 v10 = GetGas(p10);
+    float4 v01 = GetGas(p01);
+    float4 v11 = GetGas(p11);
+    
+    // Билинейная интерполяция
+    float4 v0 = lerp(v00, v10, f.x);
+    float4 v1 = lerp(v01, v11, f.x);
+    return lerp(v0, v1, f.y);
+}
+
+// ===== KERNEL: ADVECTION =====
+[numthreads(8, 8, 1)]
+void AdvectGas(uint3 id : SV_DispatchThreadID)
+{
+    int2 pos = int2(id.xy);
+    if (!InBounds(pos)) return;
+    
+    float4 current = GetGas(pos);
+    float2 velocity = current.gb * 2.0 - 1.0;  // Декодируем: 0-1 → -1..1
+    
+    // Semi-Lagrangian: откуда пришло значение?
+    float2 sourcePos = float2(pos) - velocity * _DeltaTime * _AdvectionSpeed;
+    
+    // Интерполируем
+    float4 advected = SampleGasBilinear(sourcePos);
+    
+    // Затухание плотности
+    advected.r *= (1.0 - _Dissipation * _DeltaTime);
+    
+    _GasOutput[pos] = advected;
+}
+
+// ===== KERNEL: DIFFUSION =====
+[numthreads(8, 8, 1)]
+void DiffuseGas(uint3 id : SV_DispatchThreadID)
+{
+    int2 pos = int2(id.xy);
+    if (!InBounds(pos)) return;
+    
+    float4 current = GetGas(pos);
+    
+    // Сумма соседей
+    float4 neighbors = float4(0,0,0,0);
+    neighbors += GetGas(pos + int2(1, 0));
+    neighbors += GetGas(pos + int2(-1, 0));
+    neighbors += GetGas(pos + int2(0, 1));
+    neighbors += GetGas(pos + int2(0, -1));
+    float4 average = neighbors / 4.0;
+    
+    // Смешиваем текущее с соседями
+    float4 diffused = lerp(current, average, _Diffusion);
+    
+    _GasOutput[pos] = diffused;
+}
+
+// ===== KERNEL: FORCES =====
+[numthreads(8, 8, 1)]
+void ApplyForces(uint3 id : SV_DispatchThreadID)
+{
+    int2 pos = int2(id.xy);
+    if (!InBounds(pos)) return;
+    
+    float4 current = GetGas(pos);
+    float density = current.r;
+    float2 velocity = current.gb * 2.0 - 1.0;  // Декодируем
+    
+    // Проверяем, есть ли здесь твёрдая частица
+    float particleType = _ParticlesTex[pos].r;
+    if (particleType > 0.5)
+    {
+        // Твёрдая частица блокирует газ
+        _GasOutput[pos] = float4(0, 0.5, 0.5, 0);  // Нет газа, нулевая скорость
+        return;
+    }
+    
+    // Гравитация (газ слегка опускается)
+    velocity.y -= _Gravity * _DeltaTime;
+    
+    // Плавучесть (плотный газ поднимается - инвертировано для эффекта)
+    velocity.y += density * _Buoyancy * _DeltaTime;
+    
+    // Ограничиваем скорость
+    velocity = clamp(velocity, float2(-1, -1), float2(1, 1));
+    
+    // Кодируем обратно: -1..1 → 0-1
+    current.gb = velocity * 0.5 + 0.5;
+    
+    _GasOutput[pos] = current;
+}
+
+// ===== KERNEL: ADD SOURCE =====
+[numthreads(8, 8, 1)]
+void AddGasSource(uint3 id : SV_DispatchThreadID)
+{
+    int2 pos = int2(id.xy);
+    if (!InBounds(pos)) return;
+    
+    float4 current = _GasOutput[pos];  // Читаем из Output (уже обновлённый)
+    
+    // Расстояние до источника
+    float dist = length(float2(pos) - float2(_SourcePosition));
+    
+    if (dist < _SourceRadius)
+    {
+        // Плавный спад от центра
+        float falloff = 1.0 - (dist / _SourceRadius);
+        falloff = falloff * falloff;  // Квадратичный спад
+        
+        // Добавляем плотность
+        current.r += _SourceStrength * falloff * _DeltaTime;
+        current.r = saturate(current.r);
+        
+        // Добавляем начальную скорость
+        float2 velocity = current.gb * 2.0 - 1.0;
+        velocity += _SourceVelocity * falloff * _DeltaTime;
+        velocity = clamp(velocity, float2(-1, -1), float2(1, 1));
+        current.gb = velocity * 0.5 + 0.5;
+    }
+    
+    _GasOutput[pos] = current;
+}
+
+// Kernel для инициализации (заполнение пустой текстуры)
+[numthreads(8, 8, 1)]
+void InitializeTexture(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_Width || id.y >= (uint)_Height) return;
+    _GasOutput[id.xy] = float4(0, 0.5, 0.5, 1);
+}
+
+// Спавн частиц (песок)
+[numthreads(8, 8, 1)]
+void SpawnParticle(uint3 id : SV_DispatchThreadID)
+{
+    int2 pos = int2(id.xy);
+    if (!InBounds(pos)) return;
+    
+    float dist = length(float2(pos) - float2(_BrushPosition));
+    
+    if (dist < _BrushRadius)
+    {
+        // Плавный спад от центра (опционально)
+        float falloff = 1.0 - (dist / _BrushRadius);
+        
+        // Записываем частицу
+        // Используем _ParticleOutput из основной симуляции
+        float4 current = _ParticleOutput[pos];
+        
+        if (_BrushType == 0)  // Sand
+        {
+            current.r = 1.0;  // Есть частица
+        }
+        else if (_BrushType == 2)  // Erase
+        {
+            current.r = 0.0;  // Удаляем
+        }
+        
+        _ParticleOutput[pos] = current;
+    }
+}
+
+// Спавн газа
+[numthreads(8, 8, 1)]
+void SpawnGasAtPoint(uint3 id : SV_DispatchThreadID)
+{
+    int2 pos = int2(id.xy);
+    if (!InBounds(pos)) return;
+    
+    float dist = length(float2(pos) - float2(_BrushPosition));
+    
+    if (dist < _BrushRadius)
+    {
+        float falloff = 1.0 - (dist / _BrushRadius);
+        falloff *= falloff;  // Квадратичный спад
+        
+        float4 gas = _GasOutput[pos];
+        
+        if (_BrushType == 1)  // Gas
+        {
+            gas.r += _BrushStrength * falloff * _DeltaTime;
+            gas.r = saturate(gas.r);
+            
+            // Добавляем начальную скорость вверх
+            float2 vel = gas.gb * 2.0 - 1.0;
+            vel.y += 0.5 * falloff * _DeltaTime;
+            gas.gb = saturate(vel * 0.5 + 0.5);
+        }
+        else if (_BrushType == 2)  // Erase
+        {
+            gas.r = 0;
+            gas.gb = float2(0.5, 0.5);  // Нулевая скорость
+        }
+        
+        _GasOutput[pos] = gas;
+    }
+}
+
+// Стирание всего
+[numthreads(8, 8, 1)]
+void EraseAtPoint(uint3 id : SV_DispatchThreadID)
+{
+    int2 pos = int2(id.xy);
+    if (!InBounds(pos)) return;
+    
+    float dist = length(float2(pos) - float2(_BrushPosition));
+    
+    if (dist < _BrushRadius)
+    {
+        _ParticleOutput[pos] = float4(0, 0, 0, 0);
+        _GasOutput[pos] = float4(0, 0.5, 0.5, 0);
+    }
+}
