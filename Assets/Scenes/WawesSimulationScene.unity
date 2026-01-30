@@ -150,7 +150,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   wawesCompute: {fileID: 7200000, guid: 20029ce4dd7ae38449e34b12e268da0b, type: 3}
   oscillationSpeed: 20
-  textureSize: 512
+  textureSize: 256
   absorbingZoneWidth: 10
   absorbingStrength: 0.1
   triangleSize: 200

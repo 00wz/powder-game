@@ -166,117 +166,140 @@
 
 ## ПЛАН ОБУЧЕНИЯ SRP
 
-### Этап 1: Архитектура SRP (Теория + Практика)
+### Этап 1: Архитектура SRP (Теория + Практика) ✅
 **Цель:** Понять, как устроен рендер-пайплайн изнутри
 
-- [ ] **1.1** Архитектура Render Pipeline
+- [x] **1.1** Архитектура Render Pipeline
   - Что такое SRP и зачем он нужен
   - RenderPipelineAsset vs ScriptableRenderer
   - Сравнение Built-in, URP, HDRP
-  - **Практика:** Изучить структуру URP Asset в проекте
+  - **Практика:** Изучили структуру URP Asset и Renderer 2D
 
-- [ ] **1.2** ScriptableRenderPass — основной строительный блок
-  - Жизненный цикл: Create → Configure → Execute → Cleanup
+- [x] **1.2** ScriptableRenderPass — основной строительный блок
+  - Жизненный цикл: RecordRenderGraph (современный API)
   - RenderPassEvent (injection points)
-  - **Практика:** Создать "пустой" pass, который только логирует этапы
+  - **Реализовано:** DebugRenderPass.cs
 
-- [ ] **1.3** ScriptableRendererFeature — интеграция в пайплайн
+- [x] **1.3** ScriptableRendererFeature — интеграция в пайплайн
   - Добавление кастомных фич в Renderer
-  - AddRenderPasses и SetupRenderPasses
-  - **Практика:** Renderer Feature, который меняет цвет экрана
+  - AddRenderPasses и Create методы
+  - **Реализовано:** DebugRendererFeature.cs, InvertColorsFeature.cs
 
-### Этап 2: Blit-операции и Full-Screen эффекты
+### Этап 2: Blit-операции и Full-Screen эффекты ✅
 **Цель:** Освоить базовые операции пост-обработки
 
-- [ ] **2.1** RTHandle и управление текстурами
-  - Разница между RenderTexture и RTHandle
-  - Правила работы с камерными буферами
-  - **Практика:** Копирование camera color в temporary texture
+- [x] **2.1** RTHandle и управление текстурами
+  - TextureHandle в Render Graph
+  - renderGraph.CreateTexture для временных текстур
+  - **Реализовано:** PixelatePass.cs, PixelateFeature.cs
 
-- [ ] **2.2** Простой Full-Screen эффект: Инверсия цветов
-  - Blit с кастомным материалом
-  - ConfigureInput для запроса ресурсов
-  - **Кейс:** Эффект "негатива" для UI паузы
+- [x] **2.2** Простой Full-Screen эффект: Инверсия цветов
+  - Blit с кастомным материалом через Blitter.BlitTexture
+  - **Реализовано:** InvertColors.shader, InvertColorsPass.cs
 
-- [ ] **2.3** Grayscale с управляемым параметром
+- [x] **2.3** Grayscale с управляемым параметром
   - Shader с _Intensity property
   - VolumeComponent для управления эффектом
-  - **Кейс:** Плавное обесцвечивание при смерти персонажа
+  - **Реализовано:** Grayscale.shader, GrayscalePass.cs, GrayscaleVolumeComponent.cs
 
-- [ ] **2.4** Vignette эффект с нуля
+- [x] **2.4** Vignette эффект с нуля
   - Математика виньетки (distance from center)
-  - Smooth falloff
-  - **Кейс:** Эффект повреждения персонажа
+  - Smooth falloff, настраиваемые параметры
+  - **Реализовано:** Vignette.shader, VignettePass.cs, VignetteFeature.cs
 
-### Этап 3: Render Graph System (Современный подход)
+### Этап 3: Render Graph System (Современный подход) ✅
 **Цель:** Освоить новый API рендер-графа Unity
 
-- [ ] **3.1** Концепция Render Graph
-  - Почему Render Graph вместо immediate mode
+- [x] **3.1** Концепция Render Graph
   - Декларативный vs императивный подход
   - Автоматическое управление ресурсами
+  - AllowGlobalStateModification для изменения шейдер-параметров
 
-- [ ] **3.2** Структура Render Graph Pass
+- [x] **3.2** Структура Render Graph Pass
   - PassData классы
   - RecordRenderGraph метод
   - builder.UseTexture и AccessFlags
-  - **Практика:** Переписать Grayscale на Render Graph
+  - **Изучено на практике во всех эффектах**
 
-- [ ] **3.3** Чтение и запись ресурсов
-  - SetRenderAttachment, SetInputAttachment
-  - Framebuffer Fetch для оптимизации
-  - **Практика:** Multi-pass эффект (blur)
+- [x] **3.3** Чтение и запись ресурсов
+  - SetRenderAttachment для записи
+  - UseTexture с AccessFlags.Read
+  - **Реализовано:** Multi-pass Gaussian Blur
 
-- [ ] **3.4** Создание временных текстур
+- [x] **3.4** Создание временных текстур
   - renderGraph.CreateTexture
-  - TextureDesc настройка
-  - **Кейс:** Two-pass Gaussian Blur
+  - Уникальные текстуры для каждого прохода
+  - **Реализовано:** GaussianBlur.shader, BlurPass.cs (с iterations)
 
-### Этап 4: Продвинутые Renderer Features
+### Этап 4: Продвинутые Renderer Features ✅ (частично)
 **Цель:** Создавать сложные визуальные эффекты
 
-- [ ] **4.1** Outline эффект через Depth + Normals
-  - Sobel edge detection
-  - Доступ к _CameraDepthTexture и _CameraNormalsTexture
-  - **Кейс:** Выделение объектов при наведении мыши
+- [x] **4.1** Outline эффект через Sobel Edge Detection
+  - Sobel edge detection по luminance
+  - Настраиваемые параметры (thickness, threshold, colors)
+  - **Реализовано:** SobelOutline.shader, OutlinePass.cs, OutlineFeature.cs
 
-- [ ] **4.2** Outline через Stencil Buffer
+- [ ] **4.2** Stencil Buffer и Render Objects
   - Stencil operations в шейдерах
-  - Render Objects с Layer Mask
-  - **Кейс:** Контур для выделенных объектов сквозь стены
+  - URP Render Objects feature
+  - **Кейс:** Контур для объектов сквозь стены
 
 - [ ] **4.3** Kawase Blur — оптимизированный blur
   - Downsampling + upsampling pyramid
-  - Kernel optimization
-  - **Кейс:** Эффект глубины резкости (DoF) для меню
+  - Сравнение с Gaussian blur
+  - **Кейс:** Bloom эффект
 
-- [ ] **4.4** Screen Space Reflections (SSR) — упрощённая версия
+- [ ] **4.4** Доступ к Depth и Normals буферам
+  - _CameraDepthTexture, _CameraNormalsTexture
+  - DepthNormals prepass
+  - **Кейс:** Depth-based outline, SSAO preparation
+
+- [ ] **4.5** Screen Space Reflections (SSR) — упрощённая версия
   - Ray marching в screen space
-  - Fallback на Cubemap
+  - Отражения только для горизонтальных поверхностей
+  - Fallback на Cubemap/Reflection Probe
   - **Кейс:** Отражения на полу для стилизованной графики
 
-### Этап 5: Интеграция с Powder Game
-**Цель:** Применить знания SRP к текущему проекту
+### Этап 5: Custom Render Pipeline с нуля 🆕
+**Цель:** Научиться создавать полноценный рендер-пайплайн
 
-- [ ] **5.1** Custom Particle Renderer Feature
-  - Отдельный pass для рендеринга симуляции
-  - Контроль порядка отрисовки
-  - **Кейс:** Частицы всегда поверх фона
+- [ ] **5.1** Архитектура Custom SRP
+  - RenderPipelineAsset — точка входа
+  - RenderPipeline — логика рендеринга
+  - Жизненный цикл: Render() для каждой камеры
+  - **Практика:** Минимальный пайплайн с очисткой экрана
 
-- [ ] **5.2** Glow для газа через SRP
-  - Bloom только для определённого слоя
-  - Threshold по яркости
-  - **Кейс:** Светящийся газ без влияния на UI
+- [ ] **5.2** Рендеринг объектов (DrawRenderers)
+  - ScriptableRenderContext.DrawRenderers()
+  - FilteringSettings — что рендерить
+  - DrawingSettings — как рендерить (shader passes)
+  - SortingSettings — порядок отрисовки
+  - **Практика:** Рендерим Unlit объекты
 
-- [ ] **5.3** Heat Distortion эффект
-  - UV displacement на основе temperature field
-  - Normal map generation from field
-  - **Кейс:** Искажение воздуха над горячими частицами
+- [ ] **5.3** Управление камерами и render targets
+  - Настройка viewport и projection matrix
+  - CullingResults для отсечения невидимых объектов
+  - Несколько камер и render targets
+  - **Практика:** Multi-camera setup
 
-- [ ] **5.4** Ambient Occlusion для частиц
-  - Screen Space AO адаптированный для 2D
-  - Sampling из particle density texture
-  - **Кейс:** Глубина и объём для песка
+- [ ] **5.4** Освещение в Custom SRP
+  - Передача light data в шейдеры
+  - Per-object lighting vs per-pixel lighting
+  - Directional, Point, Spot lights
+  - **Практика:** Простой Lambert diffuse lighting
+
+- [ ] **5.5** Тени в Custom SRP
+  - Shadow maps — концепция
+  - Shadow caster pass
+  - Shadow receiver pass
+  - Cascaded Shadow Maps для directional light
+  - **Практика:** Базовые тени от directional light
+
+- [ ] **5.6** Пост-обработка в Custom SRP
+  - Рендер в off-screen buffer
+  - Full-screen pass
+  - Интеграция эффектов в кастомный пайплайн
+  - **Практика:** Bloom в нашем Custom SRP
 
 ### Этап 6: Оптимизация и Production
 **Цель:** Подготовить знания для реальных проектов
@@ -333,8 +356,41 @@
 ---
 
 ## Текущий прогресс SRP
-**Статус:** 🚀 Курс начат
-**Текущий этап:** 1.1 — Архитектура Render Pipeline
+**Статус:** 🚀 Этапы 1-3 завершены, 4.1 выполнен
+**Текущий этап:** 4.2 — Stencil Buffer и Render Objects
+
+### Созданные файлы SRP (Assets/SRP/)
+
+**Шейдеры (Shaders/):**
+- `InvertColors.shader` — Инверсия цветов
+- `Pixelate.shader` — Пикселизация
+- `Grayscale.shader` — Обесцвечивание
+- `Vignette.shader` — Виньетка
+- `GaussianBlur.shader` — Gaussian blur
+- `SobelOutline.shader` — Outline через Sobel
+
+**Passes (Features/):**
+- `DebugRenderPass.cs` — Отладочный pass
+- `InvertColorsPass.cs` — Инверсия
+- `PixelatePass.cs` — Пикселизация
+- `GrayscalePass.cs` — Grayscale
+- `VignettePass.cs` — Виньетка
+- `BlurPass.cs` — Multi-pass blur
+- `OutlinePass.cs` — Sobel outline
+
+**Features (Features/):**
+- `DebugRendererFeature.cs`
+- `InvertColorsFeature.cs`
+- `PixelateFeature.cs`
+- `GrayscaleFeature.cs`
+- `VignetteFeature.cs`
+- `BlurFeature.cs`
+- `OutlineFeature.cs`
+
+**Volume Components (Features/):**
+- `GrayscaleVolumeComponent.cs`
+- `BlurVolumeComponent.cs`
+- `OutlineVolumeComponent.cs`
 
 ---
 
