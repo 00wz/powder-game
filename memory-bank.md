@@ -231,7 +231,7 @@
   - Уникальные текстуры для каждого прохода
   - **Реализовано:** GaussianBlur.shader, BlurPass.cs (с iterations)
 
-### Этап 4: Продвинутые Renderer Features ✅ (частично)
+### Этап 4: Продвинутые Renderer Features ✅
 **Цель:** Создавать сложные визуальные эффекты
 
 - [x] **4.1** Outline эффект через Sobel Edge Detection
@@ -239,26 +239,31 @@
   - Настраиваемые параметры (thickness, threshold, colors)
   - **Реализовано:** SobelOutline.shader, OutlinePass.cs, OutlineFeature.cs
 
-- [ ] **4.2** Stencil Buffer и Render Objects
-  - Stencil operations в шейдерах
+- [x] **4.2** Stencil Buffer и Render Objects
+  - Stencil operations в шейдерах (Ref, Comp, Pass)
   - URP Render Objects feature
-  - **Кейс:** Контур для объектов сквозь стены
+  - **Реализовано:** PortalMask.shader, PortalContent.shader, XRaySilhouette.shader
+  - **Урок:** 09_StencilBuffer.md
 
-- [ ] **4.3** Kawase Blur — оптимизированный blur
-  - Downsampling + upsampling pyramid
-  - Сравнение с Gaussian blur
-  - **Кейс:** Bloom эффект
+- [x] **4.3** Kawase Blur — оптимизированный blur
+  - Downsampling + upsampling pyramid (Dual Kawase)
+  - Simple mode с итерациями
+  - **Реализовано:** KawaseBlur.shader, KawaseBlurPass.cs, KawaseBlurFeature.cs
+  - **Урок:** 10_KawaseBlur.md
 
-- [ ] **4.4** Доступ к Depth и Normals буферам
+- [x] **4.4** Доступ к Depth и Normals буферам
   - _CameraDepthTexture, _CameraNormalsTexture
-  - DepthNormals prepass
-  - **Кейс:** Depth-based outline, SSAO preparation
+  - SampleSceneDepth(), SampleSceneNormals()
+  - Различие orthographic vs perspective камер (unity_OrthoParams.w)
+  - **Реализовано:** DepthNormalsVisualize.shader, DepthNormalsVisualizePass.cs, DepthNormalsVisualizeFeature.cs
+  - **Урок:** 11_DepthNormals.md
 
-- [ ] **4.5** Screen Space Reflections (SSR) — упрощённая версия
+- [x] **4.5** Screen Space Reflections (SSR)
   - Ray marching в screen space
-  - Отражения только для горизонтальных поверхностей
-  - Fallback на Cubemap/Reflection Probe
-  - **Кейс:** Отражения на полу для стилизованной графики
+  - Binary search refinement для точности
+  - Fresnel эффект и edge fade
+  - **Реализовано:** SSR.shader, SSRPass.cs, SSRFeature.cs
+  - **Урок:** 12_SSR.md
 
 ### Этап 5: Custom Render Pipeline с нуля 🆕
 **Цель:** Научиться создавать полноценный рендер-пайплайн
@@ -356,8 +361,8 @@
 ---
 
 ## Текущий прогресс SRP
-**Статус:** 🚀 Этапы 1-3 завершены, 4.1 выполнен
-**Текущий этап:** 4.2 — Stencil Buffer и Render Objects
+**Статус:** 🚀 Этапы 1-4 завершены
+**Текущий этап:** Выбор — 4.5 SSR (опционально) или 5.1 Custom SRP
 
 ### Созданные файлы SRP (Assets/SRP/)
 

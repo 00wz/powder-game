@@ -318,6 +318,37 @@ Stencil
 
 ---
 
+## ⚠️ Важно: LightMode в URP Multi-Pass шейдерах
+
+### Проблема
+В URP **LightMode теги** определяют, какие проходы рендерятся. Не все LightMode работают для всех типов объектов!
+
+### Какие LightMode рендерятся:
+
+| LightMode | Когда работает |
+|-----------|----------------|
+| `UniversalForward` | **Всегда** для Opaque/Transparent |
+| `UniversalForwardOnly` | **Всегда** — дополнительный forward pass |
+| `SRPDefaultUnlit` | Только для Unlit или в определённых режимах ❌ |
+| `DepthOnly` | Только при рендере глубины |
+| `ShadowCaster` | Только при рендере теней |
+
+### Правило для multi-pass:
+
+```hlsl
+// ❌ НЕ работает (SRPDefaultUnlit может не рендериться)
+Pass { Tags { "LightMode" = "UniversalForward" } }
+Pass { Tags { "LightMode" = "SRPDefaultUnlit" } }
+
+// ✅ РАБОТАЕТ (оба прохода гарантированно выполнятся)
+Pass { Tags { "LightMode" = "UniversalForward" } }
+Pass { Tags { "LightMode" = "UniversalForwardOnly" } }
+```
+
+> **Правило:** Для multi-pass шейдеров в URP используй `UniversalForward` + `UniversalForwardOnly`
+
+---
+
 ## Твои реализованные файлы
 
 ### PortalMask.shader
