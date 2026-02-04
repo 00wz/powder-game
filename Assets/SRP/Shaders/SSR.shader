@@ -41,6 +41,12 @@ Shader "Hidden/SSR"
         float4x4 _SSR_ViewMatrix;
         float4x4 _SSR_InverseViewMatrix;
 
+        // Сэмплирование глубины без градиентов (для использования в циклах)
+        float SampleSceneDepthLOD(float2 uv)
+        {
+            return SAMPLE_TEXTURE2D_LOD(_CameraDepthTexture, sampler_CameraDepthTexture, uv, 0).r;
+        }
+
         // Получаем линейную глубину с учётом типа камеры
         float GetLinearDepth01(float rawDepth)
         {
@@ -159,8 +165,8 @@ Shader "Hidden/SSR"
                     currentScreen.y < 0 || currentScreen.y > 1)
                     break;
                 
-                // Сэмплируем глубину сцены
-                float sceneDepth = SampleSceneDepth(currentScreen.xy);
+                // Сэмплируем глубину сцены (без градиентов - LOD версия)
+                float sceneDepth = SampleSceneDepthLOD(currentScreen.xy);
                 float sceneLinearDepth = GetLinearEyeDepth(sceneDepth);
                 
                 // Интерполируем глубину луча
@@ -183,7 +189,7 @@ Shader "Hidden/SSR"
                     for (int j = 0; j < 3; j++)
                     {
                         midScreen = (lo + hi) * 0.5;
-                        float midSceneDepth = SampleSceneDepth(midScreen.xy);
+                        float midSceneDepth = SampleSceneDepthLOD(midScreen.xy);
                         float midSceneLinear = GetLinearEyeDepth(midSceneDepth);
                         
                         float midT = lerp(0, t, length(midScreen.xy - screenStart.xy) / screenDirLen);
@@ -243,15 +249,23 @@ Shader "Hidden/SSR"
             float3 normalVS = mul((float3x3)_SSR_ViewMatrix, normalWS);
             
             // Направление взгляда (в view space камера в начале координат, смотрит в -Z)
-            float3 viewDir = normalize(viewPos);
+            float3 viewDir;
+            if (unity_OrthoParams.w > 0.5) // Orthographic
+            {
+                viewDir = float3(0.0, 0.0, -1.0);
+            }
+            else
+            {
+                viewDir = normalize(viewPos);
+            }
             
             // Направление отражения
             float3 reflectDir = reflect(viewDir, normalVS);
             
             // Пропускаем, если отражение направлено от камеры (за объект)
             // В view space, если reflectDir.z > 0, луч идёт к камере
-            if (reflectDir.z > 0.1)
-                return sceneColor;
+            // if (reflectDir.z > 0.1)
+            //     return sceneColor;
             
             // Fresnel эффект - отражения сильнее на пологих углах
             float fresnel = pow(1.0 - saturate(dot(-viewDir, normalVS)), 3.0);
@@ -268,7 +282,7 @@ Shader "Hidden/SSR"
                 half4 reflectionColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, hitUV);
                 
                 // Финальное смешивание
-                float reflectionStrength = fade * _Intensity * fresnel;
+                float reflectionStrength = fade * _Intensity;// * fresnel;
                 
                 return half4(lerp(sceneColor.rgb, reflectionColor.rgb, reflectionStrength), sceneColor.a);
             }
