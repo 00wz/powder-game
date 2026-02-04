@@ -119,105 +119,99 @@ Shader "Hidden/SSR"
             return frac(magic.z * frac(dot(pixelCoord, magic.xy)));
         }
 
-        // Ray March в Screen Space
+        // Ray March в View Space (корректно для перспективной проекции)
         // Возвращает: xy = hitUV, z = hit (0 или 1), w = fade
         float4 RayMarch(float3 viewOrigin, float3 viewDir, float2 screenUV)
         {
-            float3 viewEnd = viewOrigin + viewDir * _MaxDistance;
-            
-            // Проецируем начало и конец в screen space
-            float3 screenStart = ViewToScreen(viewOrigin);
-            float3 screenEnd = ViewToScreen(viewEnd);
-            
-            // Направление в screen space
-            float2 screenDir = screenEnd.xy - screenStart.xy;
-            float screenDirLen = length(screenDir);
-            
-            if (screenDirLen < 0.001)
-                return float4(0, 0, 0, 0);
-            
-            screenDir /= screenDirLen;
-            
-            // Количество шагов: минимум из настройки и расчёта по StepSize
-            // MAX_STEPS_LIMIT - фиксированный лимит для компилятора (чтобы цикл развернулся)
-            const int MAX_STEPS_LIMIT = 128;
-            int requestedSteps = min((int)_MaxSteps, max(1, (int)(screenDirLen / _StepSize)));
-            int steps = min(MAX_STEPS_LIMIT, requestedSteps);
-            
-            float stepSize = screenDirLen / steps;
+            // Шаг в view space
+            float viewStepSize = _MaxDistance / _MaxSteps;
             
             // Jitter для уменьшения артефактов
-            float jitter = InterleavedGradientNoise(screenUV * _ScreenParams.xy) * 0.5;
+            float jitter = InterleavedGradientNoise(screenUV * _ScreenParams.xy);
             
-            float3 currentScreen = screenStart;
-            float3 prevScreen = screenStart;
+            // Начинаем с небольшим отступом чтобы избежать self-intersection
+            float3 currentViewPos = viewOrigin + viewDir * viewStepSize * (0.5 + jitter);
+            float3 prevViewPos = viewOrigin;
             
-            // Начинаем с небольшим отступом, чтобы избежать self-intersection
-            currentScreen.xy += screenDir * stepSize * (0.5 + jitter);
+            const int MAX_STEPS_LIMIT = 128;
+            int steps = min(MAX_STEPS_LIMIT, (int)_MaxSteps);
             
             [loop]
             for (int i = 0; i < MAX_STEPS_LIMIT; i++)
             {
-                // Ранний выход если превысили нужное количество шагов
                 if (i >= steps)
                     break;
-                    
+                
+                // Проецируем текущую точку луча в screen space
+                float3 screenPos = ViewToScreen(currentViewPos);
+                float2 currentUV = screenPos.xy;
+                
                 // Проверяем, что UV в пределах экрана
-                if (currentScreen.x < 0 || currentScreen.x > 1 ||
-                    currentScreen.y < 0 || currentScreen.y > 1)
+                if (currentUV.x < 0 || currentUV.x > 1 ||
+                    currentUV.y < 0 || currentUV.y > 1)
                     break;
                 
-                // Сэмплируем глубину сцены (без градиентов - LOD версия)
-                float sceneDepth = SampleSceneDepthLOD(currentScreen.xy);
+                // Сэмплируем глубину сцены
+                float sceneDepth = SampleSceneDepthLOD(currentUV);
                 float sceneLinearDepth = GetLinearEyeDepth(sceneDepth);
                 
-                // Интерполируем глубину луча
-                float t = (float)(i + 1) / steps;
-                float rayLinearDepth = lerp(-viewOrigin.z, -viewEnd.z, t);
+                // Глубина луча (в view space Z отрицательный, поэтому берём минус)
+                float rayLinearDepth = -currentViewPos.z;
                 
-                // Проверяем пересечение
+                // Проверяем пересечение: луч прошёл за поверхность
                 float depthDiff = rayLinearDepth - sceneLinearDepth;
                 
                 if (depthDiff > 0 && depthDiff < _Thickness)
                 {
-                    // Нашли пересечение!
-                    float2 hitUV = currentScreen.xy;
+                    // Нашли пересечение! Binary search refinement в view space
+                    float3 lo = prevViewPos;
+                    float3 hi = currentViewPos;
+                    float2 hitUV = currentUV;
                     
-                    // Binary search refinement (3 итерации)
-                    float3 midScreen;
-                    float3 lo = prevScreen;
-                    float3 hi = currentScreen;
-                    
-                    for (int j = 0; j < 3; j++)
+                    [unroll]
+                    for (int j = 0; j < 4; j++)
                     {
-                        midScreen = (lo + hi) * 0.5;
-                        float midSceneDepth = SampleSceneDepthLOD(midScreen.xy);
-                        float midSceneLinear = GetLinearEyeDepth(midSceneDepth);
+                        float3 midView = (lo + hi) * 0.5;
+                        float3 midScreen = ViewToScreen(midView);
+                        float2 midUV = midScreen.xy;
                         
-                        float midT = lerp(0, t, length(midScreen.xy - screenStart.xy) / screenDirLen);
-                        float midRayLinear = lerp(-viewOrigin.z, -viewEnd.z, midT);
+                        // Проверяем границы
+                        if (midUV.x < 0 || midUV.x > 1 || midUV.y < 0 || midUV.y > 1)
+                        {
+                            hi = midView;
+                            continue;
+                        }
+                        
+                        float midSceneDepth = SampleSceneDepthLOD(midUV);
+                        float midSceneLinear = GetLinearEyeDepth(midSceneDepth);
+                        float midRayLinear = -midView.z;
                         
                         if (midRayLinear > midSceneLinear)
-                            hi = midScreen;
+                        {
+                            hi = midView;
+                            hitUV = midUV;
+                        }
                         else
-                            lo = midScreen;
+                        {
+                            lo = midView;
+                        }
                     }
                     
-                    hitUV = midScreen.xy;
-                    
                     // Fade к краям экрана
-                    float2 edgeFade = smoothstep(0, _EdgeFade, hitUV) * 
+                    float2 edgeFade = smoothstep(0, _EdgeFade, hitUV) *
                                       smoothstep(0, _EdgeFade, 1.0 - hitUV);
                     float screenFade = edgeFade.x * edgeFade.y;
                     
-                    // Fade по расстоянию
-                    float distFade = 1.0 - saturate(t);
+                    // Fade по расстоянию (нормализуем по MaxDistance)
+                    float travelDist = length(currentViewPos - viewOrigin);
+                    float distFade = 1.0 - saturate(travelDist / _MaxDistance);
                     
                     return float4(hitUV, 1.0, screenFade * distFade);
                 }
                 
-                prevScreen = currentScreen;
-                currentScreen.xy += screenDir * stepSize;
+                // Шагаем дальше по лучу в view space
+                prevViewPos = currentViewPos;
+                currentViewPos += viewDir * viewStepSize;
             }
             
             return float4(0, 0, 0, 0);
