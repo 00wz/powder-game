@@ -138,9 +138,11 @@ Shader "Hidden/SSR"
             
             screenDir /= screenDirLen;
             
-            // Фиксированное количество шагов для компилятора
-            const int MAX_STEPS = 64;
-            int steps = min(MAX_STEPS, max(1, (int)(screenDirLen / _StepSize)));
+            // Количество шагов: минимум из настройки и расчёта по StepSize
+            // MAX_STEPS_LIMIT - фиксированный лимит для компилятора (чтобы цикл развернулся)
+            const int MAX_STEPS_LIMIT = 128;
+            int requestedSteps = min((int)_MaxSteps, max(1, (int)(screenDirLen / _StepSize)));
+            int steps = min(MAX_STEPS_LIMIT, requestedSteps);
             
             float stepSize = screenDirLen / steps;
             
@@ -154,7 +156,7 @@ Shader "Hidden/SSR"
             currentScreen.xy += screenDir * stepSize * (0.5 + jitter);
             
             [loop]
-            for (int i = 0; i < MAX_STEPS; i++)
+            for (int i = 0; i < MAX_STEPS_LIMIT; i++)
             {
                 // Ранний выход если превысили нужное количество шагов
                 if (i >= steps)
