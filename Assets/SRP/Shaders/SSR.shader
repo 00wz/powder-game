@@ -120,7 +120,7 @@ Shader "Hidden/SSR"
             float jitter = InterleavedGradientNoise(screenUV * _ScreenParams.xy);
             
             // Начинаем с небольшим отступом чтобы избежать self-intersection
-            float3 currentViewPos = viewOrigin + viewDir * viewStepSize;// * (0.5 + jitter);
+            float3 currentViewPos = viewOrigin + viewDir * viewStepSize * (0.5 + jitter);
             float3 prevViewPos = viewOrigin;
             
             const int MAX_STEPS_LIMIT = 128;
@@ -196,7 +196,7 @@ Shader "Hidden/SSR"
                     float travelDist = length(currentViewPos - viewOrigin);
                     float distFade = 1.0 - saturate(travelDist / _MaxDistance);
                     
-                    return float4(hitUV, 1.0, screenFade/* * distFade*/);
+                    return float4(hitUV, 1.0, screenFade * distFade);
                 }
                 
                 // Шагаем дальше по лучу в view space
@@ -254,14 +254,6 @@ Shader "Hidden/SSR"
             // reflect(I, N) возвращает I - 2*dot(I,N)*N
             float3 reflectDir = reflect(viewDir, normalVS);
             
-            // Для горизонтального пола (нормаль вверх) отражение должно идти вниз
-            // и в противоположную по глубине сторону
-            
-            // Пропускаем, если отражение направлено от камеры (за объект)
-            // В view space, если reflectDir.z > 0, луч идёт к камере
-            // if (reflectDir.z > 0.1)
-            //     return sceneColor;
-            
             // Fresnel эффект - отражения сильнее на пологих углах
             float fresnel = pow(1.0 - saturate(dot(-viewDir, normalVS)), 3.0);
             
@@ -277,7 +269,7 @@ Shader "Hidden/SSR"
                 half4 reflectionColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, hitUV);
                 
                 // Финальное смешивание
-                float reflectionStrength = /*fade * */_Intensity;// * fresnel;
+                float reflectionStrength = fade * _Intensity * fresnel;
                 
                 return half4(lerp(sceneColor.rgb, reflectionColor.rgb, reflectionStrength), sceneColor.a);
             }
