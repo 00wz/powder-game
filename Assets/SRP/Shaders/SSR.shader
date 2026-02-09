@@ -35,11 +35,11 @@ Shader "Hidden/SSR"
         float _Intensity;
         float _EdgeFade;
 
-        // Матрицы для реконструкции позиции (с префиксом SSR_ чтобы избежать конфликтов)
-        float4x4 _SSR_InverseProjectionMatrix;
-        float4x4 _SSR_ProjectionMatrix;
-        float4x4 _SSR_ViewMatrix;
-        float4x4 _SSR_InverseViewMatrix;
+        // Используем встроенные матрицы Unity:
+        // UNITY_MATRIX_V - View matrix (world to camera)
+        // UNITY_MATRIX_I_V - Inverse View matrix (camera to world)
+        // UNITY_MATRIX_P - Projection matrix
+        // UNITY_MATRIX_I_P - Inverse Projection matrix
 
         // Сэмплирование глубины без градиентов (для использования в циклах)
         float SampleSceneDepthLOD(float2 uv)
@@ -74,42 +74,32 @@ Shader "Hidden/SSR"
         // Реконструкция позиции в View Space из UV и глубины
         float3 ReconstructViewPosition(float2 uv, float depth)
         {
-            // NDC координаты
-            float2 ndc = uv * 2.0 - 1.0;
-            
-            if (unity_OrthoParams.w > 0.5) // Orthographic
+            // undo ComputeScreenPos Y-flip
+            if (_ProjectionParams.x < 0)
             {
-                float3 viewPos;
-                viewPos.x = ndc.x * unity_OrthoParams.x;
-                viewPos.y = ndc.y * unity_OrthoParams.y;
-                viewPos.z = -GetLinearEyeDepth(depth);
-                return viewPos;
+                uv.y = 1.0 - uv.y;
             }
             
-            // Perspective
-            float4 clipPos = float4(ndc.x, ndc.y, depth, 1.0);
-            
-            #if UNITY_REVERSED_Z
-                clipPos.z = 1.0 - clipPos.z;
-            #endif
-            
-            float4 viewPos = mul(_SSR_InverseProjectionMatrix, clipPos);
+            float4 clipPos;
+            clipPos.xy = uv * 2.0 - 1.0;
+
+            clipPos.z = depth;
+            clipPos.w = 1.0;
+
+            float4 viewPos = mul(UNITY_MATRIX_I_P, clipPos);
             return viewPos.xyz / viewPos.w;
         }
 
         // Проекция View Space → Screen UV
         float3 ViewToScreen(float3 viewPos)
         {
-            float4 clipPos = mul(_SSR_ProjectionMatrix, float4(viewPos, 1.0));
-            float3 ndc = clipPos.xyz / clipPos.w;
+            float4 clipPos = mul(UNITY_MATRIX_P, float4(viewPos, 1.0));
+            float4 screenPos = ComputeScreenPos(clipPos);
+
+            float2 uv = screenPos.xy / screenPos.w;
+            float depth = screenPos.z / screenPos.w;
             
-            float2 uv = ndc.xy * 0.5 + 0.5;
-            
-            #if UNITY_UV_STARTS_AT_TOP
-                uv.y = 1.0 - uv.y;
-            #endif
-            
-            return float3(uv, ndc.z);
+            return float3(uv, depth);
         }
 
         // Шум для jittering
@@ -130,7 +120,7 @@ Shader "Hidden/SSR"
             float jitter = InterleavedGradientNoise(screenUV * _ScreenParams.xy);
             
             // Начинаем с небольшим отступом чтобы избежать self-intersection
-            float3 currentViewPos = viewOrigin + viewDir * viewStepSize * (0.5 + jitter);
+            float3 currentViewPos = viewOrigin + viewDir * viewStepSize;// * (0.5 + jitter);
             float3 prevViewPos = viewOrigin;
             
             const int MAX_STEPS_LIMIT = 128;
@@ -206,7 +196,7 @@ Shader "Hidden/SSR"
                     float travelDist = length(currentViewPos - viewOrigin);
                     float distFade = 1.0 - saturate(travelDist / _MaxDistance);
                     
-                    return float4(hitUV, 1.0, screenFade * distFade);
+                    return float4(hitUV, 1.0, screenFade/* * distFade*/);
                 }
                 
                 // Шагаем дальше по лучу в view space
@@ -220,6 +210,7 @@ Shader "Hidden/SSR"
         // Используем Vert из Blit.hlsl
         half4 Frag(Varyings input) : SV_Target
         {
+            //float2 uv = GetNormalizedScreenSpaceUV(input.positionCS);
             float2 uv = input.texcoord;
             
             // Исходный цвет сцены
@@ -240,23 +231,31 @@ Shader "Hidden/SSR"
             
             // Реконструируем позицию в view space
             float3 viewPos = ReconstructViewPosition(uv, depth);
+            // Конвертируем нормаль из World Space в View Space
+            // Для нормалей используем транспонированную инверсную матрицу,
+            // но для ортонормированных матриц (без масштабирования) это то же самое что (float3x3)ViewMatrix
+            float3 normalVS = normalize(mul((float3x3)UNITY_MATRIX_V, normalWS));
             
-            // Конвертируем нормаль в view space
-            float3 normalVS = mul((float3x3)_SSR_ViewMatrix, normalWS);
-            
-            // Направление взгляда (в view space камера в начале координат, смотрит в -Z)
+            // Направление взгляда (от камеры к точке)
+            // В view space камера в (0,0,0) и смотрит в направлении -Z
             float3 viewDir;
             if (unity_OrthoParams.w > 0.5) // Orthographic
             {
+                // Для ортографической камеры направление всегда (0,0,-1) в view space
                 viewDir = float3(0.0, 0.0, -1.0);
             }
             else
             {
+                // Для перспективной камеры - вектор от камеры к точке
                 viewDir = normalize(viewPos);
             }
             
-            // Направление отражения
+            // Направление отражения в view space
+            // reflect(I, N) возвращает I - 2*dot(I,N)*N
             float3 reflectDir = reflect(viewDir, normalVS);
+            
+            // Для горизонтального пола (нормаль вверх) отражение должно идти вниз
+            // и в противоположную по глубине сторону
             
             // Пропускаем, если отражение направлено от камеры (за объект)
             // В view space, если reflectDir.z > 0, луч идёт к камере
@@ -278,7 +277,7 @@ Shader "Hidden/SSR"
                 half4 reflectionColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, hitUV);
                 
                 // Финальное смешивание
-                float reflectionStrength = fade * _Intensity;// * fresnel;
+                float reflectionStrength = /*fade * */_Intensity;// * fresnel;
                 
                 return half4(lerp(sceneColor.rgb, reflectionColor.rgb, reflectionStrength), sceneColor.a);
             }

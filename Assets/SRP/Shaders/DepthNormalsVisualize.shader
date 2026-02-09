@@ -86,13 +86,19 @@ Shader "Hidden/SRP/DepthNormalsVisualize"
         return half4(linear01, linear01, linear01, 1);
     }
     
+    // Сэмплирование глубины без градиентов (для использования в циклах)
+    float SampleSceneDepthLOD(float2 uv)
+    {
+        return SAMPLE_TEXTURE2D_LOD(_CameraDepthTexture, sampler_CameraDepthTexture, uv, 0).r;
+    }
+
     // ============================================
     // MODE 2: Eye Depth (глубина в мировых единицах, нормализованная)
     // ============================================
     half4 FragEyeDepth(Varyings input) : SV_Target
     {
         float2 uv = input.texcoord;
-        float depth = SampleSceneDepth(uv);
+        float depth = SampleSceneDepthLOD(uv);//SampleSceneDepth(uv);
         float eyeDepth = GetLinearEyeDepth(depth);
         
         // Нормализуем для визуализации

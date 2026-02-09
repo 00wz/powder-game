@@ -67,7 +67,7 @@ MonoBehaviour:
   m_Active: 1
   settings:
     renderPassEvent: 500
-    maxSteps: 8
+    maxSteps: 64
     stepSize: 0.001
     maxDistance: 100
     thickness: 2

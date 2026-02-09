@@ -15,11 +15,6 @@ public class SSRPass : ScriptableRenderPass
     private static readonly int MaxDistanceId = Shader.PropertyToID("_MaxDistance");
     private static readonly int IntensityId = Shader.PropertyToID("_Intensity");
     private static readonly int EdgeFadeId = Shader.PropertyToID("_EdgeFade");
-    
-    private static readonly int InverseProjectionMatrixId = Shader.PropertyToID("_SSR_InverseProjectionMatrix");
-    private static readonly int ProjectionMatrixId = Shader.PropertyToID("_SSR_ProjectionMatrix");
-    private static readonly int ViewMatrixId = Shader.PropertyToID("_SSR_ViewMatrix");
-    private static readonly int InverseViewMatrixId = Shader.PropertyToID("_SSR_InverseViewMatrix");
 
     public SSRPass(Material material, SSRFeature.Settings settings)
     {
@@ -43,10 +38,6 @@ public class SSRPass : ScriptableRenderPass
         public TextureHandle sourceTexture;
         public TextureHandle destinationTexture;
         public SSRFeature.Settings settings;
-        public Matrix4x4 inverseProjectionMatrix;
-        public Matrix4x4 projectionMatrix;
-        public Matrix4x4 viewMatrix;
-        public Matrix4x4 inverseViewMatrix;
     }
 
     public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
@@ -70,21 +61,12 @@ public class SSRPass : ScriptableRenderPass
             wrapMode = TextureWrapMode.Clamp
         });
 
-        // Получаем матрицы камеры
-        Camera camera = cameraData.camera;
-        Matrix4x4 projMatrix = GL.GetGPUProjectionMatrix(camera.projectionMatrix, true);
-        Matrix4x4 viewMatrix = camera.worldToCameraMatrix;
-
         using (var builder = renderGraph.AddRasterRenderPass<PassData>("SSR Pass", out var passData))
         {
             passData.material = m_Material;
             passData.sourceTexture = resourceData.activeColorTexture;
             passData.destinationTexture = destinationTexture;
             passData.settings = m_Settings;
-            passData.projectionMatrix = projMatrix;
-            passData.inverseProjectionMatrix = projMatrix.inverse;
-            passData.viewMatrix = viewMatrix;
-            passData.inverseViewMatrix = viewMatrix.inverse;
 
             builder.UseTexture(passData.sourceTexture, AccessFlags.Read);
             builder.SetRenderAttachment(destinationTexture, 0, AccessFlags.Write);
@@ -100,11 +82,7 @@ public class SSRPass : ScriptableRenderPass
                 data.material.SetFloat(IntensityId, data.settings.intensity);
                 data.material.SetFloat(EdgeFadeId, data.settings.edgeFade);
                 
-                // Матрицы для реконструкции позиции
-                data.material.SetMatrix(InverseProjectionMatrixId, data.inverseProjectionMatrix);
-                data.material.SetMatrix(ProjectionMatrixId, data.projectionMatrix);
-                data.material.SetMatrix(ViewMatrixId, data.viewMatrix);
-                data.material.SetMatrix(InverseViewMatrixId, data.inverseViewMatrix);
+                // Матрицы используются встроенные UNITY_MATRIX_* в шейдере
 
                 Blitter.BlitTexture(context.cmd, data.sourceTexture, new Vector4(1, 1, 0, 0), data.material, 0);
             });
