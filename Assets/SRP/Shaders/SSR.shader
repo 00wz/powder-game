@@ -221,6 +221,19 @@ Shader "Hidden/SSR"
             return float4(0, 0, 0, 0);
         }
 
+
+        half3 GetSkyBoxColor(float3 dirVS)
+        {
+            // Конвертируем направление отражения из view space в world space
+            float3 dirWS = mul((float3x3)UNITY_MATRIX_I_V, dirVS);
+            
+            // Сэмплируем skybox cubemap
+            half4 encodedIrradiance = SAMPLE_TEXTURECUBE_LOD(_SSR_SkyCube, sampler_SSR_SkyCube, dirWS, 0);
+            
+            // Декодируем HDR
+            return DecodeHDRCubemap(encodedIrradiance, _SSR_SkyCube_HDR);
+        }
+
         // Используем Vert из Blit.hlsl
         half4 Frag(Varyings input) : SV_Target
         {
@@ -284,21 +297,22 @@ Shader "Hidden/SSR"
                 
                 // Сэмплируем цвет отражения из screen
                 reflectionColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, hitUV).rgb;
-                reflectionStrength = fade * _Intensity * fresnel;
+                if(_SSR_UseSkyboxFallback > 0.5)
+                {
+                    reflectionColor = lerp(GetSkyBoxColor(reflectDir), reflectionColor, fade);
+                    reflectionStrength = _Intensity * fresnel;
+                }
+                else
+                {
+                    reflectionStrength = fade * _Intensity * fresnel;
+                }
             }
             else
             {
                 // Fallback: сэмплируем skybox
                 if (_SSR_UseSkyboxFallback > 0.5)
                 {
-                    // Конвертируем направление отражения из view space в world space
-                    float3 reflectDirWS = mul((float3x3)UNITY_MATRIX_I_V, reflectDir);
-                    
-                    // Сэмплируем skybox cubemap
-                    half4 encodedIrradiance = SAMPLE_TEXTURECUBE_LOD(_SSR_SkyCube, sampler_SSR_SkyCube, reflectDirWS, 0);
-                    
-                    // Декодируем HDR
-                    reflectionColor = DecodeHDRCubemap(encodedIrradiance, _SSR_SkyCube_HDR);
+                    reflectionColor = GetSkyBoxColor(reflectDir);
                     
                     // Для skybox fallback используем fresnel и полную интенсивность
                     reflectionStrength = _Intensity * fresnel;
