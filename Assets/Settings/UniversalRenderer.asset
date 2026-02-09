@@ -67,10 +67,10 @@ MonoBehaviour:
   m_Active: 1
   settings:
     renderPassEvent: 500
-    maxSteps: 64
-    stepSize: 0.001
-    maxDistance: 100
-    thickness: 2
+    maxSteps: 128
+    stepSize: 0.0338
+    maxDistance: 20
+    thickness: 1.053
     intensity: 1
-    edgeFade: 0.1
+    edgeFade: 0.035
   m_Shader: {fileID: 4800000, guid: eb04468f025cc70409a45a12e97226d4, type: 3}

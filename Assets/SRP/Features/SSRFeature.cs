@@ -36,6 +36,13 @@ public class SSRFeature : ScriptableRendererFeature
         [Tooltip("Затухание к краям экрана")]
         [Range(0.01f, 0.5f)]
         public float edgeFade = 0.1f;
+        
+        [Header("Skybox Fallback")]
+        [Tooltip("Использовать skybox когда SSR не находит пересечение")]
+        public bool useSkyboxFallback = true;
+        
+        [Tooltip("Cubemap для отражений (если не задан - используется Reflection Probe или Lighting Skybox)")]
+        public Cubemap fallbackCubemap;
     }
 
     public Settings settings = new Settings();

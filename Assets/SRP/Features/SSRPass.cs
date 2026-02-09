@@ -15,6 +15,9 @@ public class SSRPass : ScriptableRenderPass
     private static readonly int MaxDistanceId = Shader.PropertyToID("_MaxDistance");
     private static readonly int IntensityId = Shader.PropertyToID("_Intensity");
     private static readonly int EdgeFadeId = Shader.PropertyToID("_EdgeFade");
+    private static readonly int SkyCubeId = Shader.PropertyToID("_SSR_SkyCube");
+    private static readonly int SkyCubeHDRId = Shader.PropertyToID("_SSR_SkyCube_HDR");
+    private static readonly int UseSkyboxFallbackId = Shader.PropertyToID("_SSR_UseSkyboxFallback");
 
     public SSRPass(Material material, SSRFeature.Settings settings)
     {
@@ -82,7 +85,45 @@ public class SSRPass : ScriptableRenderPass
                 data.material.SetFloat(IntensityId, data.settings.intensity);
                 data.material.SetFloat(EdgeFadeId, data.settings.edgeFade);
                 
-                // Матрицы используются встроенные UNITY_MATRIX_* в шейдере
+                // Skybox fallback
+                data.material.SetFloat(UseSkyboxFallbackId, data.settings.useSkyboxFallback ? 1f : 0f);
+                if (data.settings.useSkyboxFallback)
+                {
+                    Texture cubemapTex = null;
+                    
+                    // 1. Сначала проверяем указанный в настройках cubemap
+                    if (data.settings.fallbackCubemap != null)
+                    {
+                        cubemapTex = data.settings.fallbackCubemap;
+                    }
+                    // 2. Пытаемся использовать default reflection probe
+                    else if (ReflectionProbe.defaultTexture != null)
+                    {
+                        cubemapTex = ReflectionProbe.defaultTexture;
+                    }
+                    // 3. Пытаемся получить из skybox материала (если это cubemap-based skybox)
+                    else if (RenderSettings.skybox != null)
+                    {
+                        if (RenderSettings.skybox.HasProperty("_Tex"))
+                            cubemapTex = RenderSettings.skybox.GetTexture("_Tex");
+                        else if (RenderSettings.skybox.HasProperty("_MainTex"))
+                            cubemapTex = RenderSettings.skybox.GetTexture("_MainTex");
+                        else if (RenderSettings.skybox.HasProperty("_Cubemap"))
+                            cubemapTex = RenderSettings.skybox.GetTexture("_Cubemap");
+                    }
+                        
+                    if (cubemapTex != null)
+                    {
+                        data.material.SetTexture(SkyCubeId, cubemapTex);
+                        // HDR decode параметры (RGBM: x=multiplier, y=1, z=0, w=0)
+                        data.material.SetVector(SkyCubeHDRId, new Vector4(1f, 1f, 0f, 0f));
+                    }
+                    else
+                    {
+                        // Нет доступного cubemap - отключаем fallback
+                        data.material.SetFloat(UseSkyboxFallbackId, 0f);
+                    }
+                }
 
                 Blitter.BlitTexture(context.cmd, data.sourceTexture, new Vector4(1, 1, 0, 0), data.material, 0);
             });

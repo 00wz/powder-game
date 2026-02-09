@@ -26,6 +26,20 @@ Shader "Hidden/SSR"
         #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
         #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareNormalsTexture.hlsl"
         #include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
+        
+        // Skybox cubemap (передаётся из C#)
+        TEXTURECUBE(_SSR_SkyCube);
+        SAMPLER(sampler_SSR_SkyCube);
+        float4 _SSR_SkyCube_HDR;
+        float _SSR_UseSkyboxFallback;
+        
+        // Декодирование HDR из RGBM (Unity reflection probe format)
+        half3 DecodeHDRCubemap(half4 data, half4 hdr)
+        {
+            // RGBM decoding: color.rgb * (color.a * hdr.x)
+            // hdr.x содержит множитель для декодирования
+            return data.rgb * (data.a * hdr.x);
+        }
 
         // Параметры SSR
         float _MaxSteps;
@@ -260,21 +274,43 @@ Shader "Hidden/SSR"
             // Ray march
             float4 hitResult = RayMarch(viewPos, reflectDir, uv);
             
-            if (hitResult.z > 0.5) // Есть пересечение
+            half3 reflectionColor;
+            float reflectionStrength;
+            
+            if (hitResult.z > 0.5) // Есть пересечение с геометрией
             {
                 float2 hitUV = hitResult.xy;
                 float fade = hitResult.w;
                 
-                // Сэмплируем цвет отражения
-                half4 reflectionColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, hitUV);
-                
-                // Финальное смешивание
-                float reflectionStrength = fade * _Intensity * fresnel;
-                
-                return half4(lerp(sceneColor.rgb, reflectionColor.rgb, reflectionStrength), sceneColor.a);
+                // Сэмплируем цвет отражения из screen
+                reflectionColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, hitUV).rgb;
+                reflectionStrength = fade * _Intensity * fresnel;
+            }
+            else
+            {
+                // Fallback: сэмплируем skybox
+                if (_SSR_UseSkyboxFallback > 0.5)
+                {
+                    // Конвертируем направление отражения из view space в world space
+                    float3 reflectDirWS = mul((float3x3)UNITY_MATRIX_I_V, reflectDir);
+                    
+                    // Сэмплируем skybox cubemap
+                    half4 encodedIrradiance = SAMPLE_TEXTURECUBE_LOD(_SSR_SkyCube, sampler_SSR_SkyCube, reflectDirWS, 0);
+                    
+                    // Декодируем HDR
+                    reflectionColor = DecodeHDRCubemap(encodedIrradiance, _SSR_SkyCube_HDR);
+                    
+                    // Для skybox fallback используем fresnel и полную интенсивность
+                    reflectionStrength = _Intensity * fresnel;
+                }
+                else
+                {
+                    // Skybox fallback отключен - возвращаем исходный цвет
+                    return sceneColor;
+                }
             }
             
-            return sceneColor;
+            return half4(lerp(sceneColor.rgb, reflectionColor, reflectionStrength), sceneColor.a);
         }
         ENDHLSL
 
