@@ -57,7 +57,6 @@ public class CustomRenderPipeline : RenderPipeline
         // Настраиваем параметры теней из asset
         shadows.Setup(
             asset.ShadowMapSize,
-            asset.ShadowDistance,
             asset.ShadowBias,
             asset.ShadowStrength
         );
@@ -83,14 +82,7 @@ public class CustomRenderPipeline : RenderPipeline
     private void RenderCamera(ScriptableRenderContext context, Camera camera)
     {
         // =====================================
-        // 1. SETUP CAMERA
-        // =====================================
-        
-        // Устанавливаем VP матрицы и другие параметры камеры
-        context.SetupCameraProperties(camera);
-        
-        // =====================================
-        // 2. CULLING
+        // 1. CULLING (сначала собираем данные)
         // =====================================
         
         // Получаем параметры для culling
@@ -108,7 +100,7 @@ public class CustomRenderPipeline : RenderPipeline
         CullingResults cullingResults = context.Cull(ref cullingParams);
         
         // =====================================
-        // 3. SETUP COMMAND BUFFER
+        // 2. SETUP COMMAND BUFFER
         // =====================================
         
         // CommandBuffer — буфер команд для GPU
@@ -120,38 +112,47 @@ public class CustomRenderPipeline : RenderPipeline
         cmd.Clear();
         
         // =====================================
-        // 4. CLEAR RENDER TARGET
-        // =====================================
-        
-        CameraClearFlags clearFlags = camera.clearFlags;
-        
-        // Определяем что очищать
-        bool clearDepth = clearFlags <= CameraClearFlags.Depth;
-        bool clearColor = clearFlags == CameraClearFlags.Color || 
-                          clearFlags == CameraClearFlags.SolidColor;
-        
-        // Используем цвет камеры или цвет по умолчанию
-        Color backgroundColor = clearColor ? camera.backgroundColor : settings.DefaultClearColor;
-        
-        cmd.ClearRenderTarget(clearDepth, clearColor, backgroundColor);
-        context.ExecuteCommandBuffer(cmd);
-        cmd.Clear();
-        
-        // =====================================
-        // 5. SHADOW PASS
+        // 3. SHADOW PASS (до настройки камеры!)
         // =====================================
         
         // Рендерим shadow map ПЕРЕД основным рендерингом
         // Shadow pass использует свой render target и VP матрицы
+        // ВАЖНО: делаем это ДО SetupCameraProperties, т.к. shadow pass
+        // устанавливает свои собственные VP матрицы
         shadows.Render(context, ref cullingResults, cmd);
+        
+        // =====================================
+        // 4. SETUP CAMERA (после shadow pass!)
+        // =====================================
         
         // Восстанавливаем camera render target после shadow pass
         cmd.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
         context.ExecuteCommandBuffer(cmd);
         cmd.Clear();
         
-        // Восстанавливаем VP матрицы камеры
+        // Устанавливаем VP матрицы и другие параметры камеры
+        // ВАЖНО: делаем это ПОСЛЕ shadow pass, чтобы восстановить VP матрицы
         context.SetupCameraProperties(camera);
+        
+        // =====================================
+        // 5. CLEAR RENDER TARGET (после восстановления камеры!)
+        // =====================================
+        
+        CameraClearFlags clearFlags = camera.clearFlags;
+        
+        // Определяем что очищать
+        bool clearDepth = clearFlags <= CameraClearFlags.Depth;
+        bool clearColor = clearFlags == CameraClearFlags.Color ||
+                          clearFlags == CameraClearFlags.SolidColor;
+        
+        // Используем цвет камеры или цвет по умолчанию
+        Color backgroundColor = clearColor ? camera.backgroundColor : settings.DefaultClearColor;
+        
+        // ВАЖНО: очищаем render target ПОСЛЕ восстановления камеры,
+        // чтобы depth buffer был чистым для основного рендеринга
+        cmd.ClearRenderTarget(clearDepth, clearColor, backgroundColor);
+        context.ExecuteCommandBuffer(cmd);
+        cmd.Clear();
         
         // =====================================
         // 6. SETUP LIGHTING

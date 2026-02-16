@@ -31,12 +31,12 @@ public class CustomRenderPipelineAsset : RenderPipelineAsset<CustomRenderPipelin
     [Tooltip("Разрешение shadow map (512, 1024, 2048, 4096)")]
     [SerializeField] private int shadowMapSize = 2048;
     
-    [Tooltip("Дальность отрисовки теней")]
+    [Tooltip("Дальность отрисовки теней (используется для culling)")] 
     [SerializeField] private float shadowDistance = 50f;
     
-    [Tooltip("Bias для уменьшения shadow acne")]
-    [Range(0f, 0.1f)]
-    [SerializeField] private float shadowBias = 0.005f;
+    [Tooltip("Depth bias для уменьшения shadow acne (умножается на 10000 для GPU)")]
+    [Range(0f, 10f)]
+    [SerializeField] private float shadowBias = 0.001f;
     
     [Tooltip("Сила тени (0 = нет тени, 1 = полная тень)")]
     [Range(0f, 1f)]
