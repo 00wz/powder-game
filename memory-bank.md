@@ -265,33 +265,36 @@
   - **Реализовано:** SSR.shader, SSRPass.cs, SSRFeature.cs
   - **Урок:** 12_SSR.md
 
-### Этап 5: Custom Render Pipeline с нуля 🆕
+### Этап 5: Custom Render Pipeline с нуля ⏳
 **Цель:** Научиться создавать полноценный рендер-пайплайн
 
-- [ ] **5.1** Архитектура Custom SRP
+- [x] **5.1** Архитектура Custom SRP
   - RenderPipelineAsset — точка входа
   - RenderPipeline — логика рендеринга
   - Жизненный цикл: Render() для каждой камеры
-  - **Практика:** Минимальный пайплайн с очисткой экрана
+  - RendererList API (современный подход)
+  - **Реализовано:** CustomRenderPipelineAsset.cs, CustomRenderPipeline.cs
+  - **Урок:** 13_CustomSRP.md
 
-- [ ] **5.2** Рендеринг объектов (DrawRenderers)
-  - ScriptableRenderContext.DrawRenderers()
+- [x] **5.2** Рендеринг объектов (DrawRenderers)
+  - ScriptableRenderContext.CreateRendererList() + cmd.DrawRendererList()
   - FilteringSettings — что рендерить
   - DrawingSettings — как рендерить (shader passes)
   - SortingSettings — порядок отрисовки
-  - **Практика:** Рендерим Unlit объекты
+  - ShaderTagId и поведение "SRPDefaultUnlit" по умолчанию
+  - **Реализовано в 5.1**
 
-- [ ] **5.3** Управление камерами и render targets
+- [x] **5.3** Управление камерами и render targets
   - Настройка viewport и projection matrix
   - CullingResults для отсечения невидимых объектов
-  - Несколько камер и render targets
-  - **Практика:** Multi-camera setup
+  - **Реализовано в 5.1-5.2** (multi-camera уже поддерживается)
 
-- [ ] **5.4** Освещение в Custom SRP
-  - Передача light data в шейдеры
-  - Per-object lighting vs per-pixel lighting
-  - Directional, Point, Spot lights
-  - **Практика:** Простой Lambert diffuse lighting
+- [x] **5.4** Освещение в Custom SRP
+  - Передача light data в шейдеры через SetGlobalVector/Array
+  - Per-pixel lighting с Lambert diffuse + Blinn-Phong specular
+  - Directional Light (main) + Point Lights (additional, до 16)
+  - **Реализовано:** Lighting.cs, CustomLit.shader
+  - **Урок:** 14_CustomLighting.md
 
 - [ ] **5.5** Тени в Custom SRP
   - Shadow maps — концепция
@@ -361,8 +364,8 @@
 ---
 
 ## Текущий прогресс SRP
-**Статус:** 🚀 Этапы 1-4 завершены
-**Текущий этап:** Выбор — 4.5 SSR (опционально) или 5.1 Custom SRP
+**Статус:** 🚀 Этапы 1-4 завершены (включая 4.5 SSR)
+**Текущий этап:** 5.1 — Архитектура Custom SRP
 
 ### Созданные файлы SRP (Assets/SRP/)
 
@@ -373,6 +376,9 @@
 - `Vignette.shader` — Виньетка
 - `GaussianBlur.shader` — Gaussian blur
 - `SobelOutline.shader` — Outline через Sobel
+- `KawaseBlur.shader` — Kawase blur (downsampling/upsampling)
+- `DepthNormalsVisualize.shader` — Визуализация глубины и нормалей
+- `SSR.shader` — Screen Space Reflections (ray marching в View Space)
 
 **Passes (Features/):**
 - `DebugRenderPass.cs` — Отладочный pass
@@ -382,6 +388,9 @@
 - `VignettePass.cs` — Виньетка
 - `BlurPass.cs` — Multi-pass blur
 - `OutlinePass.cs` — Sobel outline
+- `KawaseBlurPass.cs` — Kawase blur с пирамидой
+- `DepthNormalsVisualizePass.cs` — Визуализация буферов
+- `SSRPass.cs` — Screen Space Reflections
 
 **Features (Features/):**
 - `DebugRendererFeature.cs`
@@ -391,11 +400,20 @@
 - `VignetteFeature.cs`
 - `BlurFeature.cs`
 - `OutlineFeature.cs`
+- `KawaseBlurFeature.cs`
+- `DepthNormalsVisualizeFeature.cs`
+- `SSRFeature.cs`
 
 **Volume Components (Features/):**
 - `GrayscaleVolumeComponent.cs`
 - `BlurVolumeComponent.cs`
 - `OutlineVolumeComponent.cs`
+
+**Уроки (Assets/Lessons/):**
+- `09_StencilBuffer.md` — Stencil Buffer и маскинг
+- `10_KawaseBlur.md` — Kawase Blur алгоритм
+- `11_DepthNormals.md` — Работа с Depth и Normals буферами
+- `12_SSR.md` — Screen Space Reflections (ray marching)
 
 ---
 

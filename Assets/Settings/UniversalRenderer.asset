@@ -72,5 +72,7 @@ MonoBehaviour:
     maxDistance: 20
     thickness: 1.053
     intensity: 1
-    edgeFade: 0.035
+    edgeFade: 0.372
+    useSkyboxFallback: 1
+    fallbackCubemap: {fileID: 0}
   m_Shader: {fileID: 4800000, guid: eb04468f025cc70409a45a12e97226d4, type: 3}
