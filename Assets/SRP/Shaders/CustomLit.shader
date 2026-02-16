@@ -148,20 +148,13 @@ Shader "Custom/Lit"
             float SampleShadowMap(float3 positionWS)
             {
                 // 1. Трансформируем в пространство света
+                // Матрица _LightViewProjection уже включает преобразование NDC -> UV [0,1]
                 float4 shadowCoord = mul(_LightViewProjection, float4(positionWS, 1.0));
                 
                 // 2. Perspective divide (для directional light w=1, но для spot/point нужен)
                 shadowCoord.xyz /= shadowCoord.w;
                 
-                // 3. Преобразуем из NDC [-1,1] в UV [0,1]
-                shadowCoord.xy = shadowCoord.xy * 0.5 + 0.5;
-                
-                // 4. Инвертируем Y для некоторых платформ
-                #if UNITY_UV_STARTS_AT_TOP
-                shadowCoord.y = 1.0 - shadowCoord.y;
-                #endif
-                
-                // 5. Проверяем, находится ли точка в пределах shadow map
+                // 3. Проверяем, находится ли точка в пределах shadow map
                 if (shadowCoord.x < 0 || shadowCoord.x > 1 ||
                     shadowCoord.y < 0 || shadowCoord.y > 1 ||
                     shadowCoord.z < 0 || shadowCoord.z > 1)
@@ -169,10 +162,10 @@ Shader "Custom/Lit"
                     return 1.0;  // Вне shadow map — нет тени
                 }
                 
-                // 6. Сэмплируем shadow map с аппаратным сравнением (PCF 1 sample)
+                // 4. Сэмплируем shadow map с аппаратным сравнением (PCF 1 sample)
                 float shadow = SAMPLE_TEXTURE2D_SHADOW(_ShadowMap, sampler_ShadowMap, shadowCoord.xyz);
                 
-                // 7. Применяем силу тени
+                // 5. Применяем силу тени
                 return lerp(1.0, shadow, _ShadowStrength);
             }
             
@@ -183,13 +176,9 @@ Shader "Custom/Lit"
             float SampleShadowMapPCF(float3 positionWS)
             {
                 // Трансформируем в пространство света
+                // Матрица _LightViewProjection уже включает преобразование NDC -> UV [0,1]
                 float4 shadowCoord = mul(_LightViewProjection, float4(positionWS, 1.0));
                 shadowCoord.xyz /= shadowCoord.w;
-                shadowCoord.xy = shadowCoord.xy * 0.5 + 0.5;
-                
-                #if UNITY_UV_STARTS_AT_TOP
-                shadowCoord.y = 1.0 - shadowCoord.y;
-                #endif
                 
                 // Проверяем границы
                 if (shadowCoord.x < 0 || shadowCoord.x > 1 ||

@@ -74,12 +74,29 @@ public class Shadows
         // 3. Создаём shadow map если ещё не создан
         CreateShadowMapIfNeeded();
         
-        // 4. Вычисляем матрицы для рендеринга с точки зрения света
-        VisibleLight light = cullingResults.visibleLights[mainLightIndex];
-        CalculateLightMatrices(light, out Matrix4x4 viewMatrix, out Matrix4x4 projMatrix);
+        // 4. Вычисляем матрицы с помощью Unity API
+        // ComputeDirectionalShadowMatricesAndCullingPrimitives корректно строит
+        // view/projection матрицы на основе камеры и направления света
+        bool success = cullingResults.ComputeDirectionalShadowMatricesAndCullingPrimitives(
+            mainLightIndex,
+            0, 1, Vector3.one,  // cascadeIndex, cascadeCount, cascadeRatios (1 каскад)
+            shadowMapSize,
+            cullingResults.visibleLights[mainLightIndex].light.shadowNearPlane,
+            out Matrix4x4 viewMatrix,
+            out Matrix4x4 projMatrix,
+            out ShadowSplitData splitData
+        );
+        
+        if (!success)
+        {
+            SetDefaultShadowGlobals(cmd);
+            return false;
+        }
         
         // Сохраняем View-Projection для использования в основном проходе
-        lightViewProjection = projMatrix * viewMatrix;
+        // Применяем преобразование из NDC [-1,1] в UV [0,1] прямо в матрицу,
+        // чтобы шейдер мог сразу получить shadow map координаты
+        lightViewProjection = ConvertToShadowAtlasMatrix(projMatrix * viewMatrix);
         
         // 5. Настраиваем render target — shadow map
         cmd.BeginSample("Shadow Map");
@@ -95,32 +112,15 @@ public class Shadows
         context.ExecuteCommandBuffer(cmd);
         cmd.Clear();
         
-        // 7. Рисуем shadow casters используя RendererList API
-        SortingSettings sortingSettings = new SortingSettings
-        {
-            criteria = SortingCriteria.CommonOpaque
-        };
-        
-        DrawingSettings drawingSettings = new DrawingSettings(
-            new ShaderTagId("ShadowCaster"),
-            sortingSettings
-        )
-        {
-            enableDynamicBatching = false,
-            enableInstancing = true
-        };
-        
-        FilteringSettings filteringSettings = new FilteringSettings(RenderQueueRange.opaque);
-        
-        // Создаём RendererList
-        RendererListParams shadowParams = new RendererListParams(
-            cullingResults,
-            drawingSettings,
-            filteringSettings
+        // 7. Рисуем shadow casters используя CreateShadowRendererList API (Unity 6+)
+        ShadowDrawingSettings shadowDrawingSettings = new ShadowDrawingSettings(
+            cullingResults, mainLightIndex
         );
-        RendererList shadowList = context.CreateRendererList(ref shadowParams);
+        shadowDrawingSettings.useRenderingLayerMaskTest = false;
         
-        cmd.DrawRendererList(shadowList);
+        RendererList shadowRendererList = context.CreateShadowRendererList(ref shadowDrawingSettings);
+        cmd.DrawRendererList(shadowRendererList);
+        
         cmd.EndSample("Shadow Map");
         
         context.ExecuteCommandBuffer(cmd);
@@ -199,47 +199,45 @@ public class Shadows
     }
     
     /// <summary>
-    /// Вычисляет матрицы View и Projection для directional light.
+    /// Преобразует VP матрицу из clip space [-1,1] в текстурные координаты [0,1].
+    /// Результат: worldPos -> shadowMapUV (xy = UV, z = depth для сравнения).
     /// </summary>
-    private void CalculateLightMatrices(
-        VisibleLight light,
-        out Matrix4x4 viewMatrix,
-        out Matrix4x4 projMatrix)
+    private static Matrix4x4 ConvertToShadowAtlasMatrix(Matrix4x4 m)
     {
-        // Направление света (инвертированное — в сторону источника)
-        Vector3 lightDir = light.localToWorldMatrix.GetColumn(2);
+        // Применяем преобразование: result = T * m, где T — матрица scale+bias
+        // T преобразует x,y,z из clip space в текстурные координаты
+        //   x' = 0.5 * x + 0.5  =>  row0' = 0.5 * row0 + 0.5 * row3
+        //   y' = 0.5 * y + 0.5  =>  row1' = 0.5 * row1 + 0.5 * row3
+        //   w' = w              =>  row3 без изменений
         
-        // Позиция "источника" — достаточно далеко, чтобы охватить всю сцену
-        Vector3 lightPos = -lightDir * shadowDistance;
+        // Remap X: [-1,1] -> [0,1]
+        m.m00 = 0.5f * (m.m00 + m.m30);
+        m.m01 = 0.5f * (m.m01 + m.m31);
+        m.m02 = 0.5f * (m.m02 + m.m32);
+        m.m03 = 0.5f * (m.m03 + m.m33);
         
-        // View matrix — смотрим в направлении света
-        viewMatrix = Matrix4x4.LookAt(lightPos, Vector3.zero, Vector3.up);
-        // LookAt возвращает матрицу для правой системы координат, 
-        // но Unity использует левую, поэтому инвертируем Z
-        viewMatrix.m20 = -viewMatrix.m20;
-        viewMatrix.m21 = -viewMatrix.m21;
-        viewMatrix.m22 = -viewMatrix.m22;
-        viewMatrix.m23 = -viewMatrix.m23;
+        // Remap Y: [-1,1] -> [0,1]
+        m.m10 = 0.5f * (m.m10 + m.m30);
+        m.m11 = 0.5f * (m.m11 + m.m31);
+        m.m12 = 0.5f * (m.m12 + m.m32);
+        m.m13 = 0.5f * (m.m13 + m.m33);
         
-        // Orthographic projection для directional light
-        float orthoSize = shadowDistance;
-        float nearPlane = 0.1f;
-        float farPlane = shadowDistance * 2f;
-        
-        projMatrix = Matrix4x4.Ortho(
-            -orthoSize, orthoSize,    // left, right
-            -orthoSize, orthoSize,    // bottom, top
-            nearPlane, farPlane       // near, far
-        );
-        
-        // Корректируем для reversed Z buffer (если используется)
-        if (SystemInfo.usesReversedZBuffer)
+        // Remap Z:
+        // На reversed Z (DirectX): Z уже в [1,0] после projection.
+        // Shadow map хранит глубину в том же пространстве [1,0].
+        // SAMPLE_TEXTURE2D_SHADOW использует GREATER comparison.
+        // НЕ ремапим Z — оставляем в том же пространстве что и shadow map.
+        if (!SystemInfo.usesReversedZBuffer)
         {
-            projMatrix.m20 = -projMatrix.m20;
-            projMatrix.m21 = -projMatrix.m21;
-            projMatrix.m22 = -projMatrix.m22;
-            projMatrix.m23 = -projMatrix.m23;
+            // OpenGL: Z в [-1,1], ремапим в [0,1]
+            // Shadow map хранит глубину в [0,1], LESS comparison.
+            m.m20 = 0.5f * (m.m20 + m.m30);
+            m.m21 = 0.5f * (m.m21 + m.m31);
+            m.m22 = 0.5f * (m.m22 + m.m32);
+            m.m23 = 0.5f * (m.m23 + m.m33);
         }
+        
+        return m;
     }
     
     /// <summary>

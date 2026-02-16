@@ -100,6 +100,10 @@ public class CustomRenderPipeline : RenderPipeline
             return;
         }
         
+        // Устанавливаем дальность теней — это позволяет Unity включить
+        // shadow casters за пределами камеры, которые могут отбрасывать тени в видимую область
+        cullingParams.shadowDistance = Mathf.Min(settings.ShadowDistance, camera.farClipPlane);
+        
         // Выполняем culling — получаем список видимых объектов
         CullingResults cullingResults = context.Cull(ref cullingParams);
         
