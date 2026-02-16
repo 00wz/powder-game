@@ -1,304 +1,145 @@
-# Урок 15: Тени в Custom SRP — Shadow Maps
+# Урок 15: Тени в Custom SRP
 
 ## Введение
 
-Тени — критически важный элемент реалистичного рендеринга. Они добавляют глубину, показывают пространственные отношения между объектами и делают сцену "заземлённой".
+Тени — один из важнейших визуальных эффектов, который добавляет глубину и реализм сцене. В этом уроке мы реализуем систему теней для directional light в нашем Custom SRP.
 
-В этом уроке мы реализуем **Shadow Mapping** — стандартную технику для рендеринга теней в реальном времени.
+## Теория: Shadow Mapping
 
----
+### Принцип работы
 
-## Как работают Shadow Maps
+Shadow mapping — двухпроходная техника:
 
-### Концепция
+1. **Shadow Pass**: Рендерим сцену с точки зрения источника света, записывая глубину в shadow map
+2. **Main Pass**: При рендеринге основной картинки сравниваем глубину каждого пикселя с shadow map
 
-Shadow Mapping — двухпроходная техника:
+Если глубина пикселя больше, чем в shadow map — пиксель в тени.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     PASS 1: Shadow Caster                    │
-│                                                             │
-│  1. Рендерим сцену С ТОЧКИ ЗРЕНИЯ ИСТОЧНИКА СВЕТА          │
-│  2. Записываем только ГЛУБИНУ в текстуру (Shadow Map)      │
-│  3. Каждый пиксель = расстояние до ближайшей поверхности   │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     PASS 2: Shadow Receiver                  │
-│                                                             │
-│  1. Рендерим сцену с основной камеры                       │
-│  2. Для каждого пикселя:                                   │
-│     a) Трансформируем позицию в пространство света         │
-│     b) Сравниваем глубину с Shadow Map                     │
-│     c) Если глубина > shadow map → пиксель в тени          │
-└─────────────────────────────────────────────────────────────┘
-```
+### Ключевые понятия
 
-### Визуализация
+- **Shadow Map** — depth texture, хранящая глубину сцены из позиции света
+- **World-to-Shadow Matrix** — матрица преобразования world position → shadow map UV + depth
+- **Shadow Bias** — смещение глубины для борьбы с shadow acne
+- **PCF (Percentage Closer Filtering)** — техника для мягких краёв теней
+
+## Реализация
+
+### Шаг 1: Структура файлов
 
 ```
-        Directional Light
-              │
-              │ Light View
-              ▼
-         ┌─────────┐
-         │ Shadow  │  ← Текстура глубины
-         │   Map   │     (расстояние до объектов)
-         └─────────┘
-              │
-              │ Sample
-              ▼
-    ┌─────────────────────┐
-    │   Main Camera View  │
-    │                     │
-    │  ░░░▓▓▓░░░░░░░░░░  │  ← Объект в тени
-    │  ░░░░░░░░░░░░░░░░  │
-    │  ░░░░░░░░░░░░░░░░  │
-    └─────────────────────┘
+Assets/SRP/CustomPipeline/
+├── Shadows.cs                  # Управление тенями
+├── CustomRenderPipeline.cs     # Интеграция теней в пайплайн
+└── CustomRenderPipelineAsset.cs # Настройки теней
+
+Assets/SRP/Shaders/
+└── CustomLit.shader            # Шейдер с поддержкой теней
 ```
 
----
-
-## Архитектура теней
-
-### Компоненты системы
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Shadow System                             │
-│                                                             │
-│  ┌───────────────┐    ┌───────────────┐                    │
-│  │   Shadows.cs  │───▶│  Shadow Map   │                    │
-│  │               │    │  (RTHandle)   │                    │
-│  │ - Setup()     │    └───────────────┘                    │
-│  │ - Render()    │            │                            │
-│  │ - Cleanup()   │            ▼                            │
-│  └───────────────┘    ┌───────────────┐                    │
-│                       │ _ShadowMap    │                    │
-│                       │ _LightVP      │  ← Глобальные     │
-│                       │ _ShadowParams │    переменные      │
-│                       └───────────────┘                    │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Shader Passes
-
-```hlsl
-// CustomLit.shader
-
-// Pass 0: CustomLit — основной рендеринг с получением теней
-Pass
-{
-    Tags { "LightMode" = "CustomLit" }
-    // Сэмплирует _ShadowMap и применяет тени
-}
-
-// Pass 1: ShadowCaster — рендеринг в shadow map
-Pass
-{
-    Tags { "LightMode" = "ShadowCaster" }
-    // Записывает только глубину
-}
-```
-
----
-
-## Реализация: Шаг за шагом
-
-### Шаг 1: Создаём класс Shadows.cs
+### Шаг 2: Shadows.cs — Основной класс
 
 ```csharp
-using UnityEngine;
-using UnityEngine.Rendering;
-
 public class Shadows
 {
     // Shader property IDs
     private static readonly int ShadowMapId = Shader.PropertyToID("_ShadowMap");
-    private static readonly int LightViewProjectionId = Shader.PropertyToID("_LightViewProjection");
-    private static readonly int ShadowBiasId = Shader.PropertyToID("_ShadowBias");
+    private static readonly int WorldToShadowMatrixId = Shader.PropertyToID("_WorldToShadowMatrix");
     private static readonly int ShadowStrengthId = Shader.PropertyToID("_ShadowStrength");
+    private static readonly int ShadowMapSizeId = Shader.PropertyToID("_ShadowMapSize");
     
-    // Shadow map параметры
+    // Настройки
     private int shadowMapSize = 2048;
-    private float shadowDistance = 100f;
     private float shadowBias = 0.005f;
-    private float shadowNormalBias = 0.4f;
     private float shadowStrength = 1f;
     
-    // Временная текстура для shadow map
-    private RTHandle shadowMap;
+    // Ресурсы
+    private RenderTexture shadowMap;
+```
+
+### Шаг 3: Рендеринг Shadow Map
+
+Порядок операций в методе `Render()`:
+
+```csharp
+public bool Render(ScriptableRenderContext context, ref CullingResults cullingResults, CommandBuffer cmd)
+{
+    // 1. Найти directional light с тенями
+    mainLightIndex = FindMainLightWithShadows(ref cullingResults);
     
-    // Матрица View-Projection для света
-    private Matrix4x4 lightViewProjection;
+    // 2. Вычислить матрицы через Unity API
+    cullingResults.ComputeDirectionalShadowMatricesAndCullingPrimitives(
+        mainLightIndex, 0, 1,
+        new Vector3(1f, 0f, 0f),
+        shadowMapSize,
+        light.shadowNearPlane,
+        out Matrix4x4 viewMatrix,
+        out Matrix4x4 projMatrix,
+        out ShadowSplitData shadowSplitData
+    );
     
-    /// <summary>
-    /// Настраивает параметры теней.
-    /// </summary>
-    public void Setup(int mapSize, float distance, float bias, float strength)
-    {
-        shadowMapSize = mapSize;
-        shadowDistance = distance;
-        shadowBias = bias;
-        shadowStrength = strength;
-    }
+    // 3. Создать shadow map
+    CreateShadowMapIfNeeded();
     
-    /// <summary>
-    /// Рендерит shadow map для directional light.
-    /// </summary>
-    public void Render(
-        ScriptableRenderContext context, 
-        ref CullingResults cullingResults,
-        int lightIndex,
-        CommandBuffer cmd)
-    {
-        // 1. Проверяем, есть ли свет с тенями
-        if (lightIndex < 0)
-            return;
-        
-        // 2. Получаем параметры тени от света
-        if (!cullingResults.GetShadowCasterBounds(lightIndex, out Bounds bounds))
-        {
-            // Нет объектов, отбрасывающих тень
-            return;
-        }
-        
-        // 3. Создаём shadow map texture
-        CreateShadowMap(cmd);
-        
-        // 4. Вычисляем матрицы для рендеринга с точки зрения света
-        var light = cullingResults.visibleLights[lightIndex];
-        CalculateLightMatrices(light, out Matrix4x4 viewMatrix, out Matrix4x4 projMatrix);
-        
-        // 5. Сохраняем VP матрицу для использования в основном проходе
-        lightViewProjection = projMatrix * viewMatrix;
-        
-        // 6. Настраиваем render target
-        cmd.SetRenderTarget(shadowMap, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
-        cmd.ClearRenderTarget(true, false, Color.clear);
-        
-        // 7. Устанавливаем VP матрицы для shadow pass
-        cmd.SetViewProjectionMatrices(viewMatrix, projMatrix);
-        
-        context.ExecuteCommandBuffer(cmd);
-        cmd.Clear();
-        
-        // 8. Рисуем shadow casters
-        SortingSettings sortingSettings = new SortingSettings
-        {
-            criteria = SortingCriteria.CommonOpaque
-        };
-        
-        DrawingSettings drawingSettings = new DrawingSettings(
-            new ShaderTagId("ShadowCaster"),
-            sortingSettings
-        );
-        
-        FilteringSettings filteringSettings = new FilteringSettings(RenderQueueRange.opaque);
-        
-        // Создаём RendererList для shadow casters
-        RendererListParams shadowParams = new RendererListParams(
-            cullingResults, 
-            drawingSettings, 
-            filteringSettings
-        );
-        RendererList shadowList = context.CreateRendererList(ref shadowParams);
-        
-        cmd.DrawRendererList(shadowList);
-        context.ExecuteCommandBuffer(cmd);
-        cmd.Clear();
-        
-        // 9. Передаём данные для основного прохода
-        SetShadowGlobals(cmd);
-        context.ExecuteCommandBuffer(cmd);
-        cmd.Clear();
-    }
+    // 4. Вычислить World-to-Shadow матрицу
+    Matrix4x4 worldToShadowMatrix = GetShadowTransform(projMatrix, viewMatrix);
     
-    /// <summary>
-    /// Создаёт текстуру shadow map.
-    /// </summary>
-    private void CreateShadowMap(CommandBuffer cmd)
-    {
-        if (shadowMap != null)
-            return;
-        
-        RenderTextureDescriptor desc = new RenderTextureDescriptor(
-            shadowMapSize, 
-            shadowMapSize,
-            RenderTextureFormat.Shadowmap, 
-            32  // depth bits
-        );
-        desc.shadowSamplingMode = ShadowSamplingMode.CompareDepths;
-        
-        shadowMap = RTHandles.Alloc(desc, name: "_ShadowMap");
-    }
+    // 5. Настроить render target
+    cmd.SetRenderTarget(shadowMap);
+    cmd.ClearRenderTarget(true, false, Color.clear);
+    cmd.SetViewProjectionMatrices(viewMatrix, projMatrix);
     
-    /// <summary>
-    /// Вычисляет матрицы View и Projection для directional light.
-    /// </summary>
-    private void CalculateLightMatrices(
-        VisibleLight light, 
-        out Matrix4x4 viewMatrix, 
-        out Matrix4x4 projMatrix)
-    {
-        // Для directional light используем orthographic projection
-        // Размер frustum зависит от shadowDistance
-        
-        // View matrix — смотрим в направлении света
-        Vector3 lightDir = -light.localToWorldMatrix.GetColumn(2);
-        Vector3 lightPos = -lightDir * shadowDistance * 0.5f; // Позиция "позади" сцены
-        
-        viewMatrix = Matrix4x4.LookAt(lightPos, lightPos + lightDir, Vector3.up);
-        
-        // Orthographic projection
-        float orthoSize = shadowDistance * 0.5f;
-        projMatrix = Matrix4x4.Ortho(
-            -orthoSize, orthoSize,    // left, right
-            -orthoSize, orthoSize,    // bottom, top
-            0.1f, shadowDistance      // near, far
-        );
-        
-        // Корректируем для платформы (reversed Z на некоторых платформах)
-        if (SystemInfo.usesReversedZBuffer)
-        {
-            projMatrix.m20 = -projMatrix.m20;
-            projMatrix.m21 = -projMatrix.m21;
-            projMatrix.m22 = -projMatrix.m22;
-            projMatrix.m23 = -projMatrix.m23;
-        }
-    }
+    // 6. Применить GPU depth bias (КРИТИЧЕСКИ ВАЖНО!)
+    cmd.SetGlobalDepthBias(shadowBias * 10000f, shadowBias * 3f);
     
-    /// <summary>
-    /// Устанавливает глобальные переменные для шейдеров.
-    /// </summary>
-    private void SetShadowGlobals(CommandBuffer cmd)
-    {
-        cmd.SetGlobalTexture(ShadowMapId, shadowMap);
-        cmd.SetGlobalMatrix(LightViewProjectionId, lightViewProjection);
-        cmd.SetGlobalFloat(ShadowBiasId, shadowBias);
-        cmd.SetGlobalFloat(ShadowStrengthId, shadowStrength);
-    }
+    // 7. Отрисовать shadow casters
+    ShadowDrawingSettings settings = new ShadowDrawingSettings(
+        cullingResults, mainLightIndex,
+        BatchCullingProjectionType.Orthographic  // Важно для directional light!
+    ) { splitData = shadowSplitData };
     
-    /// <summary>
-    /// Освобождает ресурсы.
-    /// </summary>
-    public void Cleanup()
-    {
-        if (shadowMap != null)
-        {
-            RTHandles.Release(shadowMap);
-            shadowMap = null;
-        }
-    }
+    RendererList shadowList = context.CreateShadowRendererList(ref settings);
+    cmd.DrawRendererList(shadowList);
+    
+    // 8. Сбросить bias
+    cmd.SetGlobalDepthBias(0f, 0f);
+    
+    // 9. Передать данные в шейдеры
+    cmd.SetGlobalTexture(ShadowMapId, shadowMap);
+    cmd.SetGlobalMatrix(WorldToShadowMatrixId, worldToShadowMatrix);
 }
 ```
 
-### Шаг 2: Shadow Caster Pass в шейдере
+### Шаг 4: World-to-Shadow Matrix
+
+```csharp
+private Matrix4x4 GetShadowTransform(Matrix4x4 proj, Matrix4x4 view)
+{
+    // Инвертируем Z для reversed Z buffer (DirectX, Metal, Vulkan)
+    if (SystemInfo.usesReversedZBuffer)
+    {
+        proj.m20 = -proj.m20;
+        proj.m21 = -proj.m21;
+        proj.m22 = -proj.m22;
+        proj.m23 = -proj.m23;
+    }
+    
+    // Clip space [-1,1] → UV space [0,1]
+    Matrix4x4 textureScaleAndBias = Matrix4x4.identity;
+    textureScaleAndBias.m00 = 0.5f;  // scale X
+    textureScaleAndBias.m11 = 0.5f;  // scale Y
+    textureScaleAndBias.m22 = 0.5f;  // scale Z
+    textureScaleAndBias.m03 = 0.5f;  // bias X
+    textureScaleAndBias.m13 = 0.5f;  // bias Y
+    textureScaleAndBias.m23 = 0.5f;  // bias Z
+    
+    // World → View → Clip → UV
+    return textureScaleAndBias * proj * view;
+}
+```
+
+### Шаг 5: Шейдер — Shadow Caster Pass
 
 ```hlsl
-// В CustomLit.shader добавляем новый Pass
-
 Pass
 {
     Name "ShadowCaster"
@@ -306,382 +147,146 @@ Pass
     
     ZWrite On
     ZTest LEqual
-    ColorMask 0  // Не пишем цвет, только глубину
+    ColorMask 0  // Только глубина
     Cull Back
     
     HLSLPROGRAM
     #pragma vertex ShadowVert
     #pragma fragment ShadowFrag
     
-    #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
-    
     float4x4 unity_ObjectToWorld;
     float4x4 unity_MatrixVP;
-    
-    float _ShadowBias;
-    
-    struct ShadowAttributes
-    {
-        float4 positionOS : POSITION;
-        float3 normalOS : NORMAL;
-    };
     
     struct ShadowVaryings
     {
         float4 positionCS : SV_POSITION;
     };
     
-    // Применяем bias для уменьшения shadow acne
-    float3 ApplyShadowBias(float3 positionWS, float3 normalWS, float3 lightDir)
-    {
-        // Depth bias — сдвигаем вдоль направления света
-        positionWS += lightDir * _ShadowBias;
-        
-        // Normal bias — сдвигаем вдоль нормали
-        // (уменьшает acne на поверхностях под углом к свету)
-        float NdotL = dot(normalWS, lightDir);
-        float normalBias = _ShadowBias * (1.0 - NdotL);
-        positionWS += normalWS * normalBias;
-        
-        return positionWS;
-    }
-    
-    ShadowVaryings ShadowVert(ShadowAttributes input)
+    // Простой vertex shader — bias применяется через SetGlobalDepthBias!
+    ShadowVaryings ShadowVert(float4 positionOS : POSITION)
     {
         ShadowVaryings output;
-        
-        float3 positionWS = mul(unity_ObjectToWorld, float4(input.positionOS.xyz, 1.0)).xyz;
-        float3 normalWS = normalize(mul((float3x3)unity_ObjectToWorld, input.normalOS));
-        
-        // Получаем направление света из VP матрицы (для directional light)
-        // Упрощённо — используем bias
-        positionWS += normalWS * _ShadowBias;
-        
+        float3 positionWS = mul(unity_ObjectToWorld, float4(positionOS.xyz, 1.0)).xyz;
         output.positionCS = mul(unity_MatrixVP, float4(positionWS, 1.0));
-        
         return output;
     }
     
     float4 ShadowFrag(ShadowVaryings input) : SV_Target
     {
-        return 0;  // Не важно, пишем только глубину
+        return 0;  // GPU записывает глубину автоматически
     }
     ENDHLSL
 }
 ```
 
-### Шаг 3: Получение теней в основном шейдере
+### Шаг 6: Шейдер — Сэмплирование теней
 
 ```hlsl
-// В основном Pass шейдера CustomLit
-
-// Глобальные переменные теней
+// Объявления
 TEXTURE2D_SHADOW(_ShadowMap);
 SAMPLER_CMP(sampler_ShadowMap);
 
-float4x4 _LightViewProjection;
-float _ShadowBias;
+float4x4 _WorldToShadowMatrix;
 float _ShadowStrength;
+float4 _ShadowMapSize;  // xy = size, zw = 1/size
 
-/// <summary>
-/// Сэмплирует shadow map и возвращает коэффициент освещённости.
-/// </summary>
-float SampleShadowMap(float3 positionWS)
-{
-    // 1. Трансформируем в пространство света
-    float4 shadowCoord = mul(_LightViewProjection, float4(positionWS, 1.0));
-    
-    // 2. Perspective divide (для directional light не нужен, но для spot/point — да)
-    shadowCoord.xyz /= shadowCoord.w;
-    
-    // 3. Преобразуем из NDC [-1,1] в UV [0,1]
-    shadowCoord.xy = shadowCoord.xy * 0.5 + 0.5;
-    
-    // 4. Инвертируем Y для некоторых платформ
-    #if UNITY_UV_STARTS_AT_TOP
-    shadowCoord.y = 1.0 - shadowCoord.y;
-    #endif
-    
-    // 5. Проверяем, находится ли точка в пределах shadow map
-    if (shadowCoord.x < 0 || shadowCoord.x > 1 || 
-        shadowCoord.y < 0 || shadowCoord.y > 1 ||
-        shadowCoord.z < 0 || shadowCoord.z > 1)
-    {
-        return 1.0;  // Вне shadow map — нет тени
-    }
-    
-    // 6. Сэмплируем shadow map с аппаратным сравнением
-    float shadow = SAMPLE_TEXTURE2D_SHADOW(_ShadowMap, sampler_ShadowMap, shadowCoord.xyz);
-    
-    // 7. Применяем силу тени
-    return lerp(1.0, shadow, _ShadowStrength);
-}
-
-// В fragment shader:
-float4 frag(Varyings input) : SV_Target
-{
-    // ... освещение ...
-    
-    // Получаем коэффициент тени
-    float shadowAttenuation = SampleShadowMap(input.positionWS);
-    
-    // Применяем тень к освещению
-    float3 finalLight = (diffuseLight + specularLight) * shadowAttenuation + ambient;
-    
-    return float4(albedo * finalLight, 1.0);
-}
-```
-
----
-
-## Shadow Bias — борьба с артефактами
-
-### Shadow Acne
-
-**Проблема:** Полосатые артефакты на освещённых поверхностях.
-
-**Причина:** Из-за ограниченной точности shadow map, поверхность может "затенять саму себя".
-
-```
-Поверхность без bias:
-█████░░░█████░░░█████  ← "полоски" тени на освещённой поверхности
-
-Поверхность с bias:
-██████████████████████  ← чистое освещение
-```
-
-**Решение:** Depth Bias + Normal Bias
-
-```hlsl
-// Depth bias — сдвигаем в сторону света
-positionWS += lightDir * depthBias;
-
-// Normal bias — сдвигаем вдоль нормали
-// Особенно важен для поверхностей под углом
-positionWS += normalWS * normalBias * (1.0 - NdotL);
-```
-
-### Peter Panning
-
-**Проблема:** Слишком большой bias → тени "отрываются" от объектов.
-
-```
-Нормальная тень:        Peter Panning:
-    ██                      ██
-    ██                      ██
-   ████                    ████
-  ██████  ← касается      ██████
-▓▓▓▓▓▓▓▓▓▓              ▓▓░░▓▓▓▓▓▓  ← отрыв!
-```
-
-**Решение:** Балансировать bias — достаточно для устранения acne, но не слишком много.
-
----
-
-## Soft Shadows — размытие теней
-
-### Percentage Closer Filtering (PCF)
-
-Вместо одного сэмпла — несколько вокруг, затем усредняем:
-
-```hlsl
+// PCF 3x3 для мягких теней
 float SampleShadowMapPCF(float3 positionWS)
 {
-    float4 shadowCoord = mul(_LightViewProjection, float4(positionWS, 1.0));
+    // World → Shadow UV + depth
+    float4 shadowCoord = mul(_WorldToShadowMatrix, float4(positionWS, 1.0));
     shadowCoord.xyz /= shadowCoord.w;
-    shadowCoord.xy = shadowCoord.xy * 0.5 + 0.5;
     
-    // Размер текселя shadow map
-    float2 texelSize = 1.0 / float2(2048, 2048);
+    // Проверка границ
+    if (shadowCoord.x < 0 || shadowCoord.x > 1 ||
+        shadowCoord.y < 0 || shadowCoord.y > 1)
+        return 1.0;
     
+    // PCF 3x3
+    float2 texelSize = _ShadowMapSize.zw;
     float shadow = 0.0;
     
-    // 3x3 kernel
+    [unroll]
     for (int x = -1; x <= 1; x++)
     {
+        [unroll]
         for (int y = -1; y <= 1; y++)
         {
             float2 offset = float2(x, y) * texelSize;
-            float3 sampleCoord = float3(shadowCoord.xy + offset, shadowCoord.z);
+            float3 sampleCoord = float3(saturate(shadowCoord.xy + offset), shadowCoord.z);
             shadow += SAMPLE_TEXTURE2D_SHADOW(_ShadowMap, sampler_ShadowMap, sampleCoord);
         }
     }
     
-    return shadow / 9.0;  // Усредняем
+    shadow /= 9.0;
+    return lerp(1.0, shadow, _ShadowStrength);
 }
 ```
 
-### Результат PCF:
+## Борьба с артефактами
 
-```
-Без PCF (hard shadows):     С PCF (soft shadows):
-████████░░░░░░░░░░░░        ████████▓▓▒▒░░░░░░░░
-████████░░░░░░░░░░░░        ████████▓▓▒▒░░░░░░░░
-████████░░░░░░░░░░░░        ████████▓▓▒▒░░░░░░░░
-```
+### Shadow Acne
 
----
+**Проблема**: Поверхность затеняет сама себя из-за погрешности глубины.
 
-## Cascaded Shadow Maps (CSM)
-
-Для больших сцен с directional light одного shadow map недостаточно — качество падает с расстоянием.
-
-### Концепция
-
-Разбиваем frustum камеры на несколько "каскадов":
-
-```
-Camera Frustum:
-
-Near ─────────────────────────────────► Far
- │                                       │
- │ Cascade 0 │ Cascade 1 │   Cascade 2   │
- │ (2048x2048)│(2048x2048)│  (2048x2048)  │
- │  Детально │  Средне   │    Грубо     │
- │                                       │
-```
-
-Каждый каскад имеет свой shadow map, покрывающий разную область.
-
-### Выбор каскада в шейдере
-
-```hlsl
-int SelectCascade(float3 positionWS, float3 cameraPos)
-{
-    float distance = length(positionWS - cameraPos);
-    
-    if (distance < _CascadeDistances.x)
-        return 0;
-    else if (distance < _CascadeDistances.y)
-        return 1;
-    else if (distance < _CascadeDistances.z)
-        return 2;
-    else
-        return 3;
-}
-```
-
----
-
-## Интеграция в пайплайн
-
-### Порядок рендеринга
-
-```
-┌──────────────────────────────────────┐
-│  1. Setup Camera                     │
-├──────────────────────────────────────┤
-│  2. Culling                          │
-├──────────────────────────────────────┤
-│  3. SHADOW PASS ← Новый!             │
-│     - Рендерим shadow map            │
-│     - Устанавливаем глобальные       │
-├──────────────────────────────────────┤
-│  4. Setup Lighting                   │
-├──────────────────────────────────────┤
-│  5. Clear                            │
-├──────────────────────────────────────┤
-│  6. Draw Opaque (с тенями)           │
-├──────────────────────────────────────┤
-│  7. Skybox                           │
-├──────────────────────────────────────┤
-│  8. Draw Transparent                 │
-├──────────────────────────────────────┤
-│  9. Submit                           │
-└──────────────────────────────────────┘
-```
-
-### В CustomRenderPipeline.cs
+**Решение**: GPU-уровневый depth bias через `SetGlobalDepthBias(depthBias, slopeBias)`:
+- `depthBias` — константное смещение
+- `slopeBias` — смещение пропорциональное наклону поверхности
 
 ```csharp
-private Shadows shadows = new Shadows();
+// ПРАВИЛЬНО: bias на GPU
+cmd.SetGlobalDepthBias(shadowBias * 10000f, shadowBias * 3f);
+cmd.DrawRendererList(shadowList);
+cmd.SetGlobalDepthBias(0f, 0f);
 
-private void RenderCamera(ScriptableRenderContext context, Camera camera)
-{
-    // ... setup, culling ...
-    
-    // SHADOW PASS
-    int mainLightIndex = GetMainLightIndex(ref cullingResults);
-    shadows.Render(context, ref cullingResults, mainLightIndex, cmd);
-    
-    // ... lighting setup ...
-    
-    // ... draw opaque (теперь с тенями) ...
-}
+// НЕПРАВИЛЬНО: bias в шейдере (меняет геометрию!)
+// positionWS += normalWS * bias;  // НЕ ДЕЛАТЬ ТАК!
 ```
 
----
+### Peter Panning
 
-## Практические задания
+**Проблема**: Слишком большой bias отрывает тень от объекта.
 
-### Задание 1: Базовые тени
+**Решение**: Использовать минимально необходимый bias + slope-scale bias.
 
-1. Создайте `Shadows.cs` с методами `Setup()`, `Render()`, `Cleanup()`
-2. Добавьте ShadowCaster pass в `CustomLit.shader`
-3. Интегрируйте в `CustomRenderPipeline.cs`
-4. Проверьте тени от Directional Light
-
-### Задание 2: Настройка bias
-
-1. Добавьте параметры bias в `CustomRenderPipelineAsset`
-2. Экспериментируйте с разными значениями
-3. Найдите баланс между acne и peter panning
-
-### Задание 3: PCF soft shadows
-
-1. Реализуйте 3x3 PCF в шейдере
-2. Сравните с hard shadows
-3. Попробуйте 5x5 PCF — какова цена производительности?
-
----
-
-## Типичные ошибки
-
-### 1. Чёрный экран после shadow pass
+## Интеграция в Pipeline
 
 ```csharp
-// ❌ Забыли восстановить render target
-shadows.Render(...);
-// ... сразу рисуем opaque — но target всё ещё shadow map!
+// CustomRenderPipeline.RenderCamera()
 
-// ✅ Восстанавливаем camera target
-shadows.Render(...);
+// 1. Culling
+cullingParams.shadowDistance = shadowDistance;
+CullingResults cullingResults = context.Cull(ref cullingParams);
+
+// 2. Shadow Pass (до основного рендеринга!)
+shadows.Render(context, ref cullingResults, cmd);
+
+// 3. Восстановить camera render target
 cmd.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
-context.ExecuteCommandBuffer(cmd);
-cmd.Clear();
+context.SetupCameraProperties(camera);
+cmd.ClearRenderTarget(clearDepth, clearColor, backgroundColor);
+
+// 4. Main Pass — тени уже доступны в шейдере
 ```
 
-### 2. Тени везде чёрные
+## Ключевые моменты
 
-```csharp
-// ❌ Неправильная матрица
-lightViewProjection = viewMatrix * projMatrix;  // Неправильный порядок!
+1. **BatchCullingProjectionType.Orthographic** — обязателен для directional light
+2. **SetGlobalDepthBias** — правильный способ борьбы с shadow acne
+3. **Reversed Z Buffer** — нужно инвертировать Z в World-to-Shadow матрице
+4. **PCF** — сэмплируем несколько точек для мягких краёв
+5. **Shadow Distance** — устанавливается в culling parameters
 
-// ✅ Правильный порядок
-lightViewProjection = projMatrix * viewMatrix;
-```
+## Настройки в Inspector
 
-### 3. Shadow acne не уходит
+- **Shadow Map Size**: 512-4096 (больше = качественнее, но дороже)
+- **Shadow Distance**: Дальность отрисовки теней
+- **Shadow Bias**: 0.001-0.01 (минимальное значение без acne)
+- **Shadow Strength**: 0-1 (прозрачность тени)
 
-```hlsl
-// ❌ Bias слишком мал
-_ShadowBias = 0.0001;
+## Что дальше?
 
-// ✅ Увеличиваем
-_ShadowBias = 0.005;  // Начинаем отсюда
-```
-
----
-
-## Итоги
-
-В этом уроке мы изучили:
-
-1. **Shadow Mapping** — двухпроходная техника рендеринга теней
-2. **Shadow Caster Pass** — рендеринг глубины с точки зрения света
-3. **Light View-Projection** — матрицы для трансформации в пространство света
-4. **Shadow Bias** — борьба с shadow acne и peter panning
-5. **PCF** — soft shadows через множественные сэмплы
-6. **CSM** — каскадные shadow maps для больших сцен
-
-В следующем уроке реализуем **пост-обработку** в Custom SRP — Bloom эффект.
+- Cascaded Shadow Maps (каскадные тени для больших сцен)
+- Point/Spot light shadows
+- Soft shadows (PCSS, VSM)
+- Screen-space shadows

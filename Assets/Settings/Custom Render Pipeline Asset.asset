@@ -16,4 +16,8 @@ MonoBehaviour:
   defaultClearColor: {r: 0.1, g: 0.1, b: 0.15, a: 1}
   renderSkybox: 1
   renderTransparent: 1
+  shadowMapSize: 2048
+  shadowDistance: 28.9
+  shadowBias: 1.26
+  shadowStrength: 1
   showUnsupportedShaders: 1
