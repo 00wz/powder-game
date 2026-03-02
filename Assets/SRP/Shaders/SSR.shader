@@ -43,7 +43,7 @@ Shader "Hidden/SSR"
 
         // Параметры SSR
         float _MaxSteps;
-        float _StepSize;
+        float _StepSize; // не используется
         float _Thickness;
         float _MaxDistance;
         float _Intensity;
@@ -136,6 +136,7 @@ Shader "Hidden/SSR"
             // Начинаем с небольшим отступом чтобы избежать self-intersection
             float3 currentViewPos = viewOrigin + viewDir * viewStepSize * (0.5 + jitter);
             float3 prevViewPos = viewOrigin;
+            float prevDepthDiff = -1;
             
             const int MAX_STEPS_LIMIT = 128;
             int steps = min(MAX_STEPS_LIMIT, (int)_MaxSteps);
@@ -165,7 +166,7 @@ Shader "Hidden/SSR"
                 // Проверяем пересечение: луч прошёл за поверхность
                 float depthDiff = rayLinearDepth - sceneLinearDepth;
                 
-                if (depthDiff > 0 && depthDiff < _Thickness)
+                if (prevDepthDiff <= 0 && depthDiff > 0 && depthDiff < _Thickness) // TODO: можно добавить динамическую толщину в зависимости от угла
                 {
                     // Нашли пересечение! Binary search refinement в view space
                     float3 lo = prevViewPos;
@@ -215,6 +216,7 @@ Shader "Hidden/SSR"
                 
                 // Шагаем дальше по лучу в view space
                 prevViewPos = currentViewPos;
+                prevDepthDiff = depthDiff;
                 currentViewPos += viewDir * viewStepSize;
             }
             

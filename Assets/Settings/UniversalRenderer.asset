@@ -68,9 +68,9 @@ MonoBehaviour:
   settings:
     renderPassEvent: 500
     maxSteps: 128
-    stepSize: 0.0338
+    stepSize: 0.0362
     maxDistance: 20
-    thickness: 1.053
+    thickness: 0.15625
     intensity: 1
     edgeFade: 0.372
     useSkyboxFallback: 1
