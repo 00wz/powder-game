@@ -134,7 +134,7 @@ Shader "Hidden/SSR"
             float jitter = InterleavedGradientNoise(screenUV * _ScreenParams.xy);
             
             // Начинаем с небольшим отступом чтобы избежать self-intersection
-            float3 currentViewPos = viewOrigin + viewDir * viewStepSize * (0.5 + jitter);
+            float3 currentViewPos = viewOrigin + viewDir * viewStepSize * (0.5 + jitter * _StepSize * 10);
             float3 prevViewPos = viewOrigin;
             float prevDepthDiff = -1;
             

@@ -24,9 +24,8 @@ MonoBehaviour:
     probeSamplingDebugMesh: {fileID: 0}
     probeSamplingDebugTexture: {fileID: 0}
     probeVolumeBlendStatesCS: {fileID: 0}
-  m_RendererFeatures:
-  - {fileID: 3939487125241096285}
-  m_RendererFeatureMap: 5d683809abdeab36
+  m_RendererFeatures: []
+  m_RendererFeatureMap: 
   m_UseNativeRenderPass: 0
   xrSystemData: {fileID: 0}
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
@@ -64,15 +63,16 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 21d07ca641e66294e81ea82ee99481da, type: 3}
   m_Name: SSRFeature
   m_EditorClassIdentifier: 
-  m_Active: 1
+  m_Active: 0
   settings:
     renderPassEvent: 500
     maxSteps: 128
-    stepSize: 0.0362
+    stepSize: 0.001
     maxDistance: 20
-    thickness: 0.15625
+    thickness: 0.42
     intensity: 1
     edgeFade: 0.372
+    passCount: 1
     useSkyboxFallback: 1
     fallbackCubemap: {fileID: 0}
   m_Shader: {fileID: 4800000, guid: eb04468f025cc70409a45a12e97226d4, type: 3}
