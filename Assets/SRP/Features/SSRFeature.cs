@@ -37,6 +37,11 @@ public class SSRFeature : ScriptableRendererFeature
         [Range(0.01f, 0.5f)]
         public float edgeFade = 0.1f;
         
+        [Header("Multi-Pass")]
+        [Tooltip("Количество проходов SSR (больше = вторичные отражения, но дороже)")]
+        [Range(1, 4)]
+        public int passCount = 1;
+
         [Header("Skybox Fallback")]
         [Tooltip("Использовать skybox когда SSR не находит пересечение")]
         public bool useSkyboxFallback = true;

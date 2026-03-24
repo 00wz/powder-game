@@ -56,83 +56,88 @@ public class SSRPass : ScriptableRenderPass
         descriptor.depthBufferBits = 0;
         descriptor.msaaSamples = 1;
 
-        TextureHandle destinationTexture = renderGraph.CreateTexture(new TextureDesc(descriptor)
+        var texDesc = new TextureDesc(descriptor)
         {
-            name = "_SSRTexture",
             clearBuffer = false,
             filterMode = FilterMode.Bilinear,
             wrapMode = TextureWrapMode.Clamp
-        });
+        };
 
-        using (var builder = renderGraph.AddRasterRenderPass<PassData>("SSR Pass", out var passData))
+        int passCount = Mathf.Max(1, m_Settings.passCount);
+
+        texDesc.name = "_SSRTexture_A";
+        TextureHandle texA = renderGraph.CreateTexture(texDesc);
+        texDesc.name = "_SSRTexture_B";
+        TextureHandle texB = passCount > 1 ? renderGraph.CreateTexture(texDesc) : texA;
+
+        TextureHandle[] pingPong = { texA, texB };
+
+        for (int i = 0; i < passCount; i++)
         {
-            passData.material = m_Material;
-            passData.sourceTexture = resourceData.activeColorTexture;
-            passData.destinationTexture = destinationTexture;
-            passData.settings = m_Settings;
+            TextureHandle src = i == 0 ? resourceData.activeColorTexture : pingPong[(i - 1) % 2];
+            TextureHandle dst = pingPong[i % 2];
 
-            builder.UseTexture(passData.sourceTexture, AccessFlags.Read);
-            builder.SetRenderAttachment(destinationTexture, 0, AccessFlags.Write);
-            builder.AllowGlobalStateModification(true);
-
-            builder.SetRenderFunc((PassData data, RasterGraphContext context) =>
+            int passIndex = i;
+            using (var builder = renderGraph.AddRasterRenderPass<PassData>($"SSR Pass {i + 1}", out var passData))
             {
-                // Устанавливаем параметры шейдера
-                data.material.SetFloat(MaxStepsId, data.settings.maxSteps);
-                data.material.SetFloat(StepSizeId, data.settings.stepSize);
-                data.material.SetFloat(ThicknessId, data.settings.thickness);
-                data.material.SetFloat(MaxDistanceId, data.settings.maxDistance);
-                data.material.SetFloat(IntensityId, data.settings.intensity);
-                data.material.SetFloat(EdgeFadeId, data.settings.edgeFade);
-                
-                // Skybox fallback
-                data.material.SetFloat(UseSkyboxFallbackId, data.settings.useSkyboxFallback ? 1f : 0f);
-                if (data.settings.useSkyboxFallback)
-                {
-                    Texture cubemapTex = null;
-                    
-                    // 1. Сначала проверяем указанный в настройках cubemap
-                    if (data.settings.fallbackCubemap != null)
-                    {
-                        cubemapTex = data.settings.fallbackCubemap;
-                    }
-                    // 2. Пытаемся использовать default reflection probe
-                    else if (ReflectionProbe.defaultTexture != null)
-                    {
-                        cubemapTex = ReflectionProbe.defaultTexture;
-                    }
-                    // 3. Пытаемся получить из skybox материала (если это cubemap-based skybox)
-                    else if (RenderSettings.skybox != null)
-                    {
-                        if (RenderSettings.skybox.HasProperty("_Tex"))
-                            cubemapTex = RenderSettings.skybox.GetTexture("_Tex");
-                        else if (RenderSettings.skybox.HasProperty("_MainTex"))
-                            cubemapTex = RenderSettings.skybox.GetTexture("_MainTex");
-                        else if (RenderSettings.skybox.HasProperty("_Cubemap"))
-                            cubemapTex = RenderSettings.skybox.GetTexture("_Cubemap");
-                    }
-                        
-                    if (cubemapTex != null)
-                    {
-                        data.material.SetTexture(SkyCubeId, cubemapTex);
-                        // HDR decode параметры (RGBM: x=multiplier, y=1, z=0, w=0)
-                        data.material.SetVector(SkyCubeHDRId, new Vector4(1f, 1f, 0f, 0f));
-                    }
-                    else
-                    {
-                        // Нет доступного cubemap - отключаем fallback
-                        data.material.SetFloat(UseSkyboxFallbackId, 0f);
-                    }
-                }
+                passData.material = m_Material;
+                passData.sourceTexture = src;
+                passData.destinationTexture = dst;
+                passData.settings = m_Settings;
 
-                Blitter.BlitTexture(context.cmd, data.sourceTexture, new Vector4(1, 1, 0, 0), data.material, 0);
-            });
+                builder.UseTexture(passData.sourceTexture, AccessFlags.Read);
+                builder.SetRenderAttachment(dst, 0, AccessFlags.Write);
+                builder.AllowGlobalStateModification(true);
+
+                builder.SetRenderFunc((PassData data, RasterGraphContext context) =>
+                {
+                    data.material.SetFloat(MaxStepsId, data.settings.maxSteps);
+                    data.material.SetFloat(StepSizeId, data.settings.stepSize);
+                    data.material.SetFloat(ThicknessId, data.settings.thickness);
+                    data.material.SetFloat(MaxDistanceId, data.settings.maxDistance);
+                    data.material.SetFloat(IntensityId, data.settings.intensity);
+                    data.material.SetFloat(EdgeFadeId, data.settings.edgeFade);
+
+                    data.material.SetFloat(UseSkyboxFallbackId, data.settings.useSkyboxFallback ? 1f : 0f);
+                    if (data.settings.useSkyboxFallback)
+                    {
+                        Texture cubemapTex = null;
+
+                        if (data.settings.fallbackCubemap != null)
+                            cubemapTex = data.settings.fallbackCubemap;
+                        else if (ReflectionProbe.defaultTexture != null)
+                            cubemapTex = ReflectionProbe.defaultTexture;
+                        else if (RenderSettings.skybox != null)
+                        {
+                            if (RenderSettings.skybox.HasProperty("_Tex"))
+                                cubemapTex = RenderSettings.skybox.GetTexture("_Tex");
+                            else if (RenderSettings.skybox.HasProperty("_MainTex"))
+                                cubemapTex = RenderSettings.skybox.GetTexture("_MainTex");
+                            else if (RenderSettings.skybox.HasProperty("_Cubemap"))
+                                cubemapTex = RenderSettings.skybox.GetTexture("_Cubemap");
+                        }
+
+                        if (cubemapTex != null)
+                        {
+                            data.material.SetTexture(SkyCubeId, cubemapTex);
+                            data.material.SetVector(SkyCubeHDRId, new Vector4(1f, 1f, 0f, 0f));
+                        }
+                        else
+                        {
+                            data.material.SetFloat(UseSkyboxFallbackId, 0f);
+                        }
+                    }
+
+                    Blitter.BlitTexture(context.cmd, data.sourceTexture, new Vector4(1, 1, 0, 0), data.material, 0);
+                });
+            }
         }
 
-        // Копируем результат обратно в активную текстуру
+        // Копируем финальный результат обратно в активную текстуру
+        TextureHandle finalResult = pingPong[(passCount - 1) % 2];
         using (var builder = renderGraph.AddRasterRenderPass<PassData>("SSR Copy Back", out var passData))
         {
-            passData.sourceTexture = destinationTexture;
+            passData.sourceTexture = finalResult;
             passData.destinationTexture = resourceData.activeColorTexture;
 
             builder.UseTexture(passData.sourceTexture, AccessFlags.Read);
