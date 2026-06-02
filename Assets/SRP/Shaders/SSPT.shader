@@ -339,8 +339,9 @@ Shader "Hidden/SSPT"
                     // Защита от лучей сквозь поверхность
                     if (dot(rayDir, normalVS) < 0.001) continue;
 
-                    // Jitter для starting offset (разбивает banding от step size)
-                    float jitter = IGN(px + float2((float)s * 43.7, (float)s * 29.3), _FrameIndex);
+                    // Jitter для starting offset: hash вместо IGN — пространственно
+                    // декоррелированный (нет когерентных полос → нет волн)
+                    float jitter = HashF(seed ^ (fi * 6271u) ^ ((uint)s * 1117u));
 
                     // ── Ray march ────────────────────────────────────────────
                     float4 hit = RayMarch(viewPos, rayDir, jitter);
@@ -348,23 +349,24 @@ Shader "Hidden/SSPT"
                     half3 L;
                     if (hit.z > 0.5)
                     {
-                        // Хит: incoming radiance = цвет сцены в точке хита
-                        // Умножаем на fade (screen edge + distance)
                         L = SAMPLE_TEXTURE2D_LOD(_BlitTexture, sampler_LinearClamp, hit.xy, 0).rgb
                             * hit.w;
                     }
                     else if (_SSPT_UseSkybox > 0.5)
                     {
-                        // Miss: incoming radiance = skybox
                         L = SampleSky(rayDir);
                     }
                     else
                     {
-                        L = 0; // нет fallback → тёмный indirect
+                        L = 0;
                     }
 
-                    // Cosine importance sampling: weight = BRDF·cosθ/pdf = albedo ≈ 1
-                    // → просто суммируем и делим на N
+                    // Firefly rejection: ограничиваем яркость сэмпла по luminance.
+                    // Без этого один очень яркий пиксель (окно, эмиссив) накапливается
+                    // в истории и даёт стойкое засветление.
+                    half lum = dot(L, half3(0.2126h, 0.7152h, 0.0722h));
+                    if (lum > 2.0h) L *= 2.0h / lum;
+
                     totalRadiance += L;
                 }
 
@@ -427,8 +429,9 @@ Shader "Hidden/SSPT"
                 // Дисперсия: E[X²] - E[X]²
                 half3 sigma = sqrt(max(0, sq - mean * mean));
 
-                // Клампим историю: k=1.5 — баланс стабильности и anti-ghosting
-                his = clamp(his, mean - 1.5 * sigma, mean + 1.5 * sigma);
+                // k=2.5: с 1spp variance в 3x3 окрестности высокая, k=1.5 отвергал
+                // историю слишком агрессивно → мерцание и полосы.
+                his = clamp(his, mean - 2.5 * sigma, mean + 2.5 * sigma);
 
                 // Exponential Moving Average
                 half3 acc = lerp(his, cur, _TemporalAlpha);

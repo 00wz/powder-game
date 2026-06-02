@@ -113,10 +113,14 @@ public class SSPTPass : ScriptableRenderPass
         var res = frame.Get<UniversalResourceData>();
         var cam = frame.Get<UniversalCameraData>();
 
+        if (!res.activeColorTexture.IsValid()) return;
+
         int w = cam.cameraTargetDescriptor.width;
         int h = cam.cameraTargetDescriptor.height;
+        if (w <= 0 || h <= 0) return;
 
         EnsureRTs(w, h);
+        if (m_HistoryRT == null || m_DenoiseResultRT == null) return;
 
         // ── Дескриптор для HDR float буферов indirect ────────────────────────
         var hdrDesc = new TextureDesc(w, h)
@@ -264,15 +268,22 @@ public class SSPTPass : ScriptableRenderPass
                     });
                 }
 
-                curDenoise = nxt;
+                curDenoise = nxt; 
             }
         }
 
         // ── PASS 3: COMPOSITE ─────────────────────────────────────────────────
         // Читаем scene color + denoised indirect → складываем → пишем в temp
-        var ldrDesc = new TextureDesc(cam.cameraTargetDescriptor)
+        // Берём формат из activeColorTexture, а не из cameraTargetDescriptor —
+        // cameraTargetDescriptor.graphicsFormat бывает None при RenderTextureFormat.Default.
+        var camFmt = cam.cameraTargetDescriptor.graphicsFormat;
+        if (camFmt == GraphicsFormat.None)
+            camFmt = GraphicsFormat.R8G8B8A8_UNorm;
+
+        var ldrDesc = new TextureDesc(w, h)
         {
-            depthBufferBits = 0,
+            colorFormat     = camFmt,
+            depthBufferBits = DepthBits.None,
             msaaSamples     = MSAASamples.None,
             filterMode      = FilterMode.Bilinear,
             name            = "_SSPT_Composited"
