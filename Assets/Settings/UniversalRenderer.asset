@@ -24,8 +24,10 @@ MonoBehaviour:
     probeSamplingDebugMesh: {fileID: 0}
     probeSamplingDebugTexture: {fileID: 0}
     probeVolumeBlendStatesCS: {fileID: 0}
-  m_RendererFeatures: []
-  m_RendererFeatureMap: 
+  m_RendererFeatures:
+  - {fileID: 7302323073754030800}
+  - {fileID: 4718911857188155776}
+  m_RendererFeatureMap: d0623f6e251057658031140e55f17c41
   m_UseNativeRenderPass: 0
   xrSystemData: {fileID: 0}
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
@@ -44,13 +46,50 @@ MonoBehaviour:
     failOperation: 0
     zFailOperation: 0
   m_ShadowTransparentReceive: 1
-  m_RenderingMode: 0
+  m_RenderingMode: 1
   m_DepthPrimingMode: 0
   m_CopyDepthMode: 1
   m_DepthAttachmentFormat: 0
   m_DepthTextureFormat: 0
   m_AccurateGbufferNormals: 0
   m_IntermediateTextureMode: 1
+--- !u!114 &917412629424338982
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a864f588276bab54f97335821add48a7, type: 3}
+  m_Name: LimSSR
+  m_EditorClassIdentifier: 
+  m_Active: 1
+  Settings:
+    tracingMode: 0
+    stepStrideLength: 0.03
+    maxSteps: 128
+    downSample: 0
+    minSmoothness: 0.5
+    reflectSky: 1
+    ditherType: 1
+    SSR_Instance: {fileID: 0}
+    SSRShader: {fileID: 4800000, guid: 03f5601bba0a8034aa526644e8b9aaeb, type: 3}
+--- !u!114 &1102046222271241751
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4268db87361095c4ca643764150c94d6, type: 3}
+  m_Name: DepthPyramid
+  m_EditorClassIdentifier: 
+  m_Active: 1
+  depthPyramidShader: {fileID: 7200000, guid: b2ead2c2a0fb2bc4d8ff715cbf4b0403, type: 3}
 --- !u!114 &3939487125241096285
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -72,6 +111,51 @@ MonoBehaviour:
     thickness: 0.42
     intensity: 1
     edgeFade: 0.372
+    passCount: 1
+    useSkyboxFallback: 1
+    fallbackCubemap: {fileID: 0}
+  m_Shader: {fileID: 4800000, guid: eb04468f025cc70409a45a12e97226d4, type: 3}
+--- !u!114 &4718911857188155776
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 12fb73196c9f4fea830d8b7ad8192f29, type: 3}
+  m_Name: URPScreenSpaceReflection
+  m_EditorClassIdentifier: 
+  m_Active: 1
+  SSRPass: 2
+  HizOnly: 0
+  SsrStepSize: 0.25
+  RenderCompositeResult: 1
+  SSRNativeScaleValue: 1
+  Intensity: 1.08
+  _hizShader: {fileID: 7200000, guid: 135dd399e355841bc9f579ddd7661f03, type: 3}
+--- !u!114 &7302323073754030800
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 21d07ca641e66294e81ea82ee99481da, type: 3}
+  m_Name: SSRFeature
+  m_EditorClassIdentifier: 
+  m_Active: 0
+  settings:
+    renderPassEvent: 500
+    maxSteps: 128
+    stepSize: 0.001
+    maxDistance: 21.1
+    thickness: 0.5
+    intensity: 1
+    edgeFade: 0.1
     passCount: 1
     useSkyboxFallback: 1
     fallbackCubemap: {fileID: 0}
