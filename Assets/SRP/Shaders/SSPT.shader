@@ -263,8 +263,7 @@ Shader "Hidden/SSPT"
         {
             float3 dirWS = mul((float3x3)UNITY_MATRIX_I_V, dirVS);
             half4  enc   = SAMPLE_TEXTURECUBE_LOD(_SSPT_SkyCube, sampler_SSPT_SkyCube, dirWS, 0);
-            // RGBM decode: Unity reflection probe format
-            return enc.rgb * (enc.a * _SSPT_SkyCube_HDR.x);
+            return DecodeHDREnvironment(enc, _SSPT_SkyCube_HDR);
         }
 
         ENDHLSL

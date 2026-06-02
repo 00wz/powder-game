@@ -57,6 +57,7 @@ public class SSPTPass : ScriptableRenderPass
         public int                   frameIndex;
         public float                 denoiseStep;
         public Texture               skyTex;
+        public Vector4               skyHDR;
         public bool                  hasSkybox;
     }
 
@@ -145,7 +146,7 @@ public class SSPTPass : ScriptableRenderPass
         TextureHandle denoiseResultH = rg.ImportTexture(m_DenoiseResultRT);
 
         // Skybox один раз на кадр
-        Texture skyTex  = ResolveSky();
+        ResolveSky(out Texture skyTex, out Vector4 skyHDR);
         bool    hasSky  = skyTex != null && m_Settings.useSkyboxFallback;
         int     fi      = m_FrameIndex;
 
@@ -159,6 +160,7 @@ public class SSPTPass : ScriptableRenderPass
             d.settings   = m_Settings;
             d.frameIndex = fi;
             d.skyTex     = skyTex;
+            d.skyHDR     = skyHDR;
             d.hasSkybox  = hasSky;
 
             builder.UseTexture(res.activeColorTexture, AccessFlags.Read);
@@ -168,7 +170,7 @@ public class SSPTPass : ScriptableRenderPass
             builder.SetRenderFunc((PassData data, RasterGraphContext ctx) =>
             {
                 SetCommonProps(data.mat, data.settings, data.frameIndex,
-                               data.skyTex, data.hasSkybox);
+                               data.skyTex, data.skyHDR, data.hasSkybox);
                 // Blitter ставит data.src как _BlitTexture → Frag_Trace читает scene color
                 Blitter.BlitTexture(ctx.cmd, data.src, new Vector4(1, 1, 0, 0), data.mat, 0);
             });
@@ -271,7 +273,7 @@ public class SSPTPass : ScriptableRenderPass
         var ldrDesc = new TextureDesc(cam.cameraTargetDescriptor)
         {
             depthBufferBits = 0,
-            msaaSamples     = 1,
+            msaaSamples     = MSAASamples.None,
             filterMode      = FilterMode.Bilinear,
             name            = "_SSPT_Composited"
         };
@@ -314,7 +316,7 @@ public class SSPTPass : ScriptableRenderPass
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private void SetCommonProps(Material m, SSPTFeature.Settings s, int fi,
-                                 Texture sky, bool hasSky)
+                                 Texture sky, Vector4 skyHDR, bool hasSky)
     {
         m.SetInt(k_SampleCount,    s.samplesPerPixel);
         m.SetInt(k_MaxSteps,       s.maxSteps);
@@ -327,23 +329,35 @@ public class SSPTPass : ScriptableRenderPass
         if (hasSky)
         {
             m.SetTexture(k_SkyCube, sky);
-            // HDR multiplier: (1,1,0,0) для линейного cubemap
-            m.SetVector(k_SkyCubeHDR, new Vector4(1f, 1f, 0f, 0f));
+            m.SetVector(k_SkyCubeHDR, skyHDR);
         }
     }
 
-    private Texture ResolveSky()
+    private void ResolveSky(out Texture tex, out Vector4 hdrDecode)
     {
-        if (!m_Settings.useSkyboxFallback) return null;
-        if (m_Settings.fallbackCubemap != null) return m_Settings.fallbackCubemap;
-        if (ReflectionProbe.defaultTexture != null) return ReflectionProbe.defaultTexture;
+        hdrDecode = new Vector4(1f, 1f, 0f, 0f);
+        tex = null;
+
+        if (!m_Settings.useSkyboxFallback) return;
+
+        if (m_Settings.fallbackCubemap != null)
+        {
+            tex = m_Settings.fallbackCubemap;
+            return;
+        }
+
+        if (ReflectionProbe.defaultTexture != null)
+        {
+            tex       = ReflectionProbe.defaultTexture;
+            hdrDecode = ReflectionProbe.defaultTextureHDRDecodeValues;
+            return;
+        }
 
         var sky = RenderSettings.skybox;
-        if (sky == null) return null;
-        if (sky.HasProperty("_Tex"))     return sky.GetTexture("_Tex");
-        if (sky.HasProperty("_MainTex")) return sky.GetTexture("_MainTex");
-        if (sky.HasProperty("_Cubemap")) return sky.GetTexture("_Cubemap");
-        return null;
+        if (sky == null) return;
+        if (sky.HasProperty("_Tex"))     { tex = sky.GetTexture("_Tex");     return; }
+        if (sky.HasProperty("_MainTex")) { tex = sky.GetTexture("_MainTex"); return; }
+        if (sky.HasProperty("_Cubemap")) { tex = sky.GetTexture("_Cubemap"); return; }
     }
 
     public void Dispose()
