@@ -127,8 +127,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 12fb73196c9f4fea830d8b7ad8192f29, type: 3}
   m_Name: URPScreenSpaceReflection
   m_EditorClassIdentifier: 
-  m_Active: 1
-  SSRPass: 2
+  m_Active: 0
+  SSRPass: 1
   HizOnly: 0
   SsrStepSize: 0.25
   RenderCompositeResult: 1
@@ -147,7 +147,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 21d07ca641e66294e81ea82ee99481da, type: 3}
   m_Name: SSRFeature
   m_EditorClassIdentifier: 
-  m_Active: 0
+  m_Active: 1
   settings:
     renderPassEvent: 500
     maxSteps: 128
