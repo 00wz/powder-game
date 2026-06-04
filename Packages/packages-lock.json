@@ -1,5 +1,12 @@
 {
   "dependencies": {
+    "com.limworks.urpssrpackage": {
+      "version": "https://github.com/JoshuaLim007/Unity-ScreenSpaceReflections-URP.git",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {},
+      "hash": "e86e0bee6722747d9c557ab5410ef4dc70f75c3e"
+    },
     "com.unity.2d.animation": {
       "version": "10.2.1",
       "depth": 1,

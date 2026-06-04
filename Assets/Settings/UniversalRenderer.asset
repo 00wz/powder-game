@@ -1,5 +1,43 @@
 %YAML 1.1
 %TAG !u! tag:unity3d.com,2011:
+--- !u!114 &-4724946000669156584
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5028f2f00df2eb2418e473937e9ae556, type: 3}
+  m_Name: ReflectRenderPass
+  m_EditorClassIdentifier: 
+  m_Active: 1
+  renderPass: 550
+  passIndex: 0
+--- !u!114 &-3329315233858832409
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a864f588276bab54f97335821add48a7, type: 3}
+  m_Name: LimSSR
+  m_EditorClassIdentifier: 
+  m_Active: 0
+  Settings:
+    tracingMode: 1
+    stepStrideLength: 0.15625
+    maxSteps: 128
+    downSample: 0
+    minSmoothness: 0
+    reflectSky: 1
+    ditherType: 1
+    SSR_Instance: {fileID: 0}
+    SSRShader: {fileID: 4800000, guid: 03f5601bba0a8034aa526644e8b9aaeb, type: 3}
 --- !u!114 &11400000
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -27,7 +65,10 @@ MonoBehaviour:
   m_RendererFeatures:
   - {fileID: 7302323073754030800}
   - {fileID: 4718911857188155776}
-  m_RendererFeatureMap: d0623f6e251057658031140e55f17c41
+  - {fileID: -4724946000669156584}
+  - {fileID: -3329315233858832409}
+  - {fileID: 4945431571126949428}
+  m_RendererFeatureMap: d0623f6e251057658031140e55f17c41185b366fa59e6dbee7378c2c6fe5cbd1341606dacfb3a144
   m_UseNativeRenderPass: 0
   xrSystemData: {fileID: 0}
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
@@ -128,13 +169,27 @@ MonoBehaviour:
   m_Name: URPScreenSpaceReflection
   m_EditorClassIdentifier: 
   m_Active: 0
-  SSRPass: 1
+  SSRPass: 0
   HizOnly: 0
   SsrStepSize: 0.25
   RenderCompositeResult: 1
-  SSRNativeScaleValue: 1
-  Intensity: 1.08
+  SSRNativeScaleValue: 2
+  Intensity: 0.692
   _hizShader: {fileID: 7200000, guid: 135dd399e355841bc9f579ddd7661f03, type: 3}
+--- !u!114 &4945431571126949428
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4268db87361095c4ca643764150c94d6, type: 3}
+  m_Name: DepthPyramid
+  m_EditorClassIdentifier: 
+  m_Active: 0
+  depthPyramidShader: {fileID: 7200000, guid: b2ead2c2a0fb2bc4d8ff715cbf4b0403, type: 3}
 --- !u!114 &7302323073754030800
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -149,10 +204,10 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   m_Active: 1
   settings:
-    renderPassEvent: 500
+    renderPassEvent: 450
     maxSteps: 128
-    stepSize: 0.001
-    maxDistance: 21.1
+    stepSize: 0.1
+    maxDistance: 20
     thickness: 0.5
     intensity: 1
     edgeFade: 0.1
