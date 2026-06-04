@@ -3,7 +3,7 @@ Shader "Hidden/SSR"
     Properties
     {
         _MaxSteps ("Max Steps", Range(8, 128)) = 32
-        _StepSize ("Step Size", Range(0.001, 0.1)) = 0.02
+        _JitterStrength ("Jitter Strength", Range(0, 1)) = 0.2
         _Thickness ("Thickness", Range(0.01, 2.0)) = 0.5
         _MaxDistance ("Max Distance", Range(1, 100)) = 50
         _Intensity ("Intensity", Range(0, 1)) = 0.5
@@ -43,7 +43,7 @@ Shader "Hidden/SSR"
 
         // Параметры SSR
         float _MaxSteps;
-        float _StepSize; // не используется
+        float _JitterStrength;
         float _Thickness;
         float _MaxDistance;
         float _Intensity;
@@ -134,7 +134,7 @@ Shader "Hidden/SSR"
             float jitter = InterleavedGradientNoise(screenUV * _ScreenParams.xy);
             
             // Начинаем с небольшим отступом чтобы избежать self-intersection
-            float3 currentViewPos = viewOrigin + viewDir * viewStepSize * (0.5 + jitter * _StepSize * 10);
+            float3 currentViewPos = viewOrigin + viewDir * viewStepSize * (1.0 + (jitter - 0.5) * _JitterStrength);
             float3 prevViewPos = viewOrigin;
             float prevDepthDiff = -1;
             

@@ -10,7 +10,7 @@ public class SSRPass : ScriptableRenderPass
 
     // Shader property IDs
     private static readonly int MaxStepsId = Shader.PropertyToID("_MaxSteps");
-    private static readonly int StepSizeId = Shader.PropertyToID("_StepSize");
+    private static readonly int JitterStrengthId = Shader.PropertyToID("_JitterStrength");
     private static readonly int ThicknessId = Shader.PropertyToID("_Thickness");
     private static readonly int MaxDistanceId = Shader.PropertyToID("_MaxDistance");
     private static readonly int IntensityId = Shader.PropertyToID("_Intensity");
@@ -92,7 +92,7 @@ public class SSRPass : ScriptableRenderPass
                 builder.SetRenderFunc((PassData data, RasterGraphContext context) =>
                 {
                     data.material.SetFloat(MaxStepsId, data.settings.maxSteps);
-                    data.material.SetFloat(StepSizeId, data.settings.stepSize);
+                    data.material.SetFloat(JitterStrengthId, data.settings.jitterStrength);
                     data.material.SetFloat(ThicknessId, data.settings.thickness);
                     data.material.SetFloat(MaxDistanceId, data.settings.maxDistance);
                     data.material.SetFloat(IntensityId, data.settings.intensity);
