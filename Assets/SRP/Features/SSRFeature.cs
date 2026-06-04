@@ -15,10 +15,6 @@ public class SSRFeature : ScriptableRendererFeature
         [Range(8, 128)]
         public int maxSteps = 32;
         
-        [Tooltip("Размер шага в screen space (меньше = точнее, но дороже)")]
-        [Range(0.001f, 0.1f)]
-        public float stepSize = 0.02f;
-        
         [Tooltip("Максимальная дистанция отражения в world units")]
         [Range(1f, 100f)]
         public float maxDistance = 50f;
@@ -27,6 +23,10 @@ public class SSRFeature : ScriptableRendererFeature
         [Tooltip("Толщина для определения пересечения")]
         [Range(0.01f, 2f)]
         public float thickness = 0.5f;
+
+        [Tooltip("Сила джиттера (рандомизация стартовой позиции луча, уменьшает бандинг)")]
+        [Range(0f, 1f)]
+        public float jitterStrength = 0.2f;
         
         [Header("Appearance")]
         [Tooltip("Интенсивность отражений")]
