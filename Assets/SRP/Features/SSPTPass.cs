@@ -44,6 +44,7 @@ public class SSPTPass : ScriptableRenderPass
     static readonly int k_SkyCube           = Shader.PropertyToID("_SSPT_SkyCube");
     static readonly int k_SkyCubeHDR        = Shader.PropertyToID("_SSPT_SkyCube_HDR");
     static readonly int k_UseSkybox         = Shader.PropertyToID("_SSPT_UseSkybox");
+    static readonly int k_SkyIntensity      = Shader.PropertyToID("_SSPT_SkyIntensity");
 
     // PassData: всё что нужно render func во время execute (после записи графа)
     // RenderGraph копирует это значение — НЕ используем ссылки на стек!
@@ -135,9 +136,6 @@ public class SSPTPass : ScriptableRenderPass
         hdrDesc.name = "_SSPT_Raw";
         TextureHandle rawIndirect = rg.CreateTexture(hdrDesc);
 
-        hdrDesc.name = "_SSPT_Temporal";
-        TextureHandle temporal = rg.CreateTexture(hdrDesc);
-
         // Ping-pong буферы для A-Trous итераций
         hdrDesc.name = "_SSPT_DenoiseA";
         TextureHandle denoiseA = rg.CreateTexture(hdrDesc);
@@ -180,41 +178,47 @@ public class SSPTPass : ScriptableRenderPass
             });
         }
 
-        // ── PASS 1: TEMPORAL ACCUMULATE ──────────────────────────────────────
-        // src = rawIndirect (текущий кадр)
-        // _HistoryTexture = m_HistoryRT.rt (предыдущий накопленный)
-        // dst = temporal (смешанный результат)
-        using (var builder = rg.AddRasterRenderPass<PassData>("SSPT Temporal", out var d))
+        // ── PASS 1: TEMPORAL ACCUMULATE (опционально) ───────────────────────
+        TextureHandle temporal;
+        if (m_Settings.enableTemporalAccumulation)
         {
-            d.mat        = m_Material;
-            d.src        = rawIndirect;
-            d.historyRT  = m_HistoryRT; // persistent RTHandle → render func читает .rt
-            d.settings   = m_Settings;
+            hdrDesc.name = "_SSPT_Temporal";
+            temporal = rg.CreateTexture(hdrDesc);
 
-            builder.UseTexture(rawIndirect, AccessFlags.Read);
-            builder.UseTexture(historyH,    AccessFlags.Read); // dependency для ordering
-            builder.SetRenderAttachment(temporal, 0, AccessFlags.Write);
-            builder.AllowGlobalStateModification(true);
-
-            builder.SetRenderFunc((PassData data, RasterGraphContext ctx) =>
+            using (var builder = rg.AddRasterRenderPass<PassData>("SSPT Temporal", out var d))
             {
-                // m_HistoryRT.rt — реальная RenderTexture (не RG handle)
-                // Доступна т.к. это imported (persistent) RT
-                data.mat.SetTexture(k_HistoryTex, data.historyRT.rt);
-                data.mat.SetFloat(k_TemporalAlpha, data.settings.temporalAlpha);
-                Blitter.BlitTexture(ctx.cmd, data.src, new Vector4(1, 1, 0, 0), data.mat, 1);
-            });
-        }
+                d.mat        = m_Material;
+                d.src        = rawIndirect;
+                d.historyRT  = m_HistoryRT;
+                d.settings   = m_Settings;
 
-        // ── PASS 1b: COPY temporal → history (для следующего кадра) ──────────
-        using (var builder = rg.AddRasterRenderPass<PassData>("SSPT WriteHistory", out var d))
+                builder.UseTexture(rawIndirect, AccessFlags.Read);
+                builder.UseTexture(historyH,    AccessFlags.Read);
+                builder.SetRenderAttachment(temporal, 0, AccessFlags.Write);
+                builder.AllowGlobalStateModification(true);
+
+                builder.SetRenderFunc((PassData data, RasterGraphContext ctx) =>
+                {
+                    data.mat.SetTexture(k_HistoryTex, data.historyRT.rt);
+                    data.mat.SetFloat(k_TemporalAlpha, data.settings.temporalAlpha);
+                    Blitter.BlitTexture(ctx.cmd, data.src, new Vector4(1, 1, 0, 0), data.mat, 1);
+                });
+            }
+
+            // PASS 1b: COPY temporal → history (для следующего кадра)
+            using (var builder = rg.AddRasterRenderPass<PassData>("SSPT WriteHistory", out var d))
+            {
+                d.src = temporal;
+                builder.UseTexture(temporal, AccessFlags.Read);
+                builder.SetRenderAttachment(historyH, 0, AccessFlags.Write);
+                builder.SetRenderFunc((PassData data, RasterGraphContext ctx) =>
+                    Blitter.BlitTexture(ctx.cmd, data.src, new Vector4(1, 1, 0, 0), 0, false));
+            }
+        }
+        else
         {
-            d.src = temporal;
-            builder.UseTexture(temporal, AccessFlags.Read);
-            // Пишем в persistent historyH — RG отслеживает write dependency
-            builder.SetRenderAttachment(historyH, 0, AccessFlags.Write);
-            builder.SetRenderFunc((PassData data, RasterGraphContext ctx) =>
-                Blitter.BlitTexture(ctx.cmd, data.src, new Vector4(1, 1, 0, 0), 0, false));
+            // Temporal выключен: денойзим сырой трейс напрямую, историю не трогаем
+            temporal = rawIndirect;
         }
 
         // ── PASS 2: A-TROUS DENOISE (0–4 итерации) ───────────────────────────
@@ -341,6 +345,7 @@ public class SSPTPass : ScriptableRenderPass
         {
             m.SetTexture(k_SkyCube, sky);
             m.SetVector(k_SkyCubeHDR, skyHDR);
+            m.SetFloat(k_SkyIntensity, s.skyIntensity);
         }
     }
 

@@ -46,6 +46,7 @@ Shader "Hidden/SSPT"
         TEXTURECUBE(_SSPT_SkyCube);  SAMPLER(sampler_SSPT_SkyCube);
         float4 _SSPT_SkyCube_HDR;
         float  _SSPT_UseSkybox;
+        float  _SSPT_SkyIntensity;
 
         // ─────────────────────────────────────────────────────────────────────
         //  СЛУЧАЙНЫЕ ЧИСЛА И LOW-DISCREPANCY SEQUENCES
@@ -354,7 +355,12 @@ Shader "Hidden/SSPT"
                     }
                     else if (_SSPT_UseSkybox > 0.5)
                     {
-                        L = SampleSky(rayDir);
+                        // Небо только для лучей выше горизонта (world-space Y > 0).
+                        // Лучи вниз при промахе — скорее геометрия за экраном (пол, стены),
+                        // а не небо. Без этой проверки вертикальные поверхности заливаются
+                        // цветом неба через нижнюю полусферу.
+                        float3 rayDirWS = mul((float3x3)UNITY_MATRIX_I_V, rayDir);
+                        L = (rayDirWS.y > 0.0) ? SampleSky(rayDir) * _SSPT_SkyIntensity : 0;
                     }
                     else
                     {

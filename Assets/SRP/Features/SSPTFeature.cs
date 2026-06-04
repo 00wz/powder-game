@@ -45,6 +45,9 @@ public class SSPTFeature : ScriptableRendererFeature
         public float edgeFade = 0.12f;
 
         [Header("Temporal Accumulation")]
+        [Tooltip("Включить накопление по кадрам. Выключить для отладки или при нежелательном ghosting.")]
+        public bool enableTemporalAccumulation = true;
+
         [Range(0.02f, 1f)]
         [Tooltip("Blend с историей. 0.05 = медленная сходимость, мало ghosting. " +
                  "0.5 = быстро, но ghosting при движении.")]
@@ -65,6 +68,11 @@ public class SSPTFeature : ScriptableRendererFeature
         [Header("Skybox Fallback")]
         [Tooltip("Использовать skybox когда луч не нашёл хит.")]
         public bool useSkyboxFallback = true;
+
+        [Range(0f, 2f)]
+        [Tooltip("Множитель яркости неба в GI. Уменьшите если небо слишком сильно окрашивает сцену. " +
+                 "Лучи вниз (ниже горизонта) небо не получают в любом случае.")]
+        public float skyIntensity = 1.0f;
 
         [Tooltip("Cubemap для GI skybox. Если null — используется ReflectionProbe или Skybox material.")]
         public Cubemap fallbackCubemap;
