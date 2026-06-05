@@ -43,11 +43,6 @@ Shader "Hidden/SSPT"
         TEXTURE2D(_HistoryTexture);  SAMPLER(sampler_HistoryTexture);
         TEXTURE2D(_IndirectTexture); SAMPLER(sampler_IndirectTexture);
 
-        TEXTURECUBE(_SSPT_SkyCube);  SAMPLER(sampler_SSPT_SkyCube);
-        float4 _SSPT_SkyCube_HDR;
-        float  _SSPT_UseSkybox;
-        float  _SSPT_SkyIntensity;
-
         // ─────────────────────────────────────────────────────────────────────
         //  СЛУЧАЙНЫЕ ЧИСЛА И LOW-DISCREPANCY SEQUENCES
         //
@@ -259,29 +254,18 @@ Shader "Hidden/SSPT"
             return float4(0, 0, 0, 0); // miss
         }
 
-        // Сэмплируем skybox cubemap: View Space dir → World Space → cubemap
-        half3 SampleSky(float3 dirVS)
-        {
-            float3 dirWS = mul((float3x3)UNITY_MATRIX_I_V, dirVS);
-            half4  enc   = SAMPLE_TEXTURECUBE_LOD(_SSPT_SkyCube, sampler_SSPT_SkyCube, dirWS, 0);
-            return DecodeHDREnvironment(enc, _SSPT_SkyCube_HDR);
-        }
-
         ENDHLSL
 
         // ═════════════════════════════════════════════════════════════════════
         //  PASS 0 — TRACE
         //
         //  Для каждого пикселя стреляем N стохастических лучей из hemisphere
-        //  над surface normal. Собираем incoming radiance Li из:
-        //   a) screen-space хит → цвет пикселя сцены (уже содержит direct light)
-        //   b) miss → skybox
+        //  над surface normal. Incoming radiance Li:
+        //   - screen-space хит → цвет пикселя сцены (direct light)
+        //   - miss → 0 (sky ambient уже учтён URP через SH-пробы)
         //
-        //  Результат: сырой (зашумлённый) буфер indirect radiance.
-        //
-        //  КЛЮЧЕВАЯ ИДЕЯ: scene color buffer на момент трейса уже содержит
-        //  direct lighting + indirect от предыдущих кадров (через temporal acc.).
-        //  → Каждый кадр добавляет один bounce, temporal строит multi-bounce GI.
+        //  Результат: сырой (зашумлённый) буфер indirect radiance (color bleed
+        //  от локальной геометрии).
         // ═════════════════════════════════════════════════════════════════════
         Pass
         {
@@ -349,23 +333,10 @@ Shader "Hidden/SSPT"
 
                     half3 L;
                     if (hit.z > 0.5)
-                    {
                         L = SAMPLE_TEXTURE2D_LOD(_BlitTexture, sampler_LinearClamp, hit.xy, 0).rgb
                             * hit.w;
-                    }
-                    else if (_SSPT_UseSkybox > 0.5)
-                    {
-                        // Небо только для лучей выше горизонта (world-space Y > 0).
-                        // Лучи вниз при промахе — скорее геометрия за экраном (пол, стены),
-                        // а не небо. Без этой проверки вертикальные поверхности заливаются
-                        // цветом неба через нижнюю полусферу.
-                        float3 rayDirWS = mul((float3x3)UNITY_MATRIX_I_V, rayDir);
-                        L = (rayDirWS.y > 0.0) ? SampleSky(rayDir) * _SSPT_SkyIntensity : 0;
-                    }
                     else
-                    {
-                        L = 0;
-                    }
+                        L = 0; // miss → ambient probe уже обеспечивает sky contribution
 
                     // Firefly rejection: ограничиваем яркость сэмпла по luminance.
                     // Без этого один очень яркий пиксель (окно, эмиссив) накапливается
