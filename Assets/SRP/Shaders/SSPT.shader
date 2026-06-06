@@ -39,6 +39,7 @@ Shader "Hidden/SSPT"
         float _TemporalAlpha;     // blend с историей: 1=только текущий кадр
         float _FrameIndex;        // счётчик кадров для анимации шума
         float _DenoiseStepWidth;  // ширина шага для a-trous (1,2,4,8...)
+        float _AOStrength;        // сила AO-коррекции (0=нет, 1=полная)
 
         TEXTURE2D(_HistoryTexture);  SAMPLER(sampler_HistoryTexture);
         TEXTURE2D(_IndirectTexture); SAMPLER(sampler_IndirectTexture);
@@ -295,6 +296,7 @@ Shader "Hidden/SSPT"
                 uint   fi = (uint)_FrameIndex;
 
                 half3 totalRadiance = 0;
+                half  totalHitFrac  = 0;
 
                 [loop]
                 for (int s = 0; s < 8; s++) // [loop] с compile-time cap = 8
@@ -332,9 +334,13 @@ Shader "Hidden/SSPT"
                     float4 hit = RayMarch(viewPos, rayDir, jitter);
 
                     half3 L;
+                    half  hitW = 0;
                     if (hit.z > 0.5)
-                        L = SAMPLE_TEXTURE2D_LOD(_BlitTexture, sampler_LinearClamp, hit.xy, 0).rgb
-                            * hit.w;
+                    {
+                        L    = SAMPLE_TEXTURE2D_LOD(_BlitTexture, sampler_LinearClamp, hit.xy, 0).rgb
+                               * hit.w;
+                        hitW = hit.w; // fade-взвешенный вклад в hitFraction
+                    }
                     else
                         L = 0; // miss → ambient probe уже обеспечивает sky contribution
 
@@ -344,11 +350,13 @@ Shader "Hidden/SSPT"
                     half lum = dot(L, half3(0.2126h, 0.7152h, 0.0722h));
                     if (lum > 2.0h) L *= 2.0h / lum;
 
-                    totalRadiance += L;
+                    totalRadiance  += L;
+                    totalHitFrac   += hitW;
                 }
 
-                totalRadiance /= (float)max(1, _SampleCount);
-                return half4(totalRadiance, 1.0);
+                float rcpN = 1.0 / (float)max(1, _SampleCount);
+                // alpha = hitFraction: 0=открыто, 1=полностью перекрыто соседней геометрией
+                return half4(totalRadiance * rcpN, totalHitFrac * rcpN);
             }
             ENDHLSL
         }
@@ -379,10 +387,11 @@ Shader "Hidden/SSPT"
             {
                 float2 uv = input.texcoord;
 
-                // Текущий кадр (raw trace output)
-                half3 cur = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, uv).rgb;
-                // Предыдущий накопленный (history)
-                half3 his = SAMPLE_TEXTURE2D(_HistoryTexture, sampler_HistoryTexture, uv).rgb;
+                // Текущий кадр (raw trace output): rgb=radiance, a=hitFraction
+                half4 curFull = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, uv);
+                half4 hisFull = SAMPLE_TEXTURE2D(_HistoryTexture, sampler_HistoryTexture, uv);
+                half3 cur = curFull.rgb;
+                half3 his = hisFull.rgb;
 
                 // ── Variance Clamping (anti-ghosting) ────────────────────────
                 // Собираем статистику (mean, variance) из 3x3 окрестности текущего кадра.
@@ -410,9 +419,11 @@ Shader "Hidden/SSPT"
                 // историю слишком агрессивно → мерцание и полосы.
                 his = clamp(his, mean - 2.5 * sigma, mean + 2.5 * sigma);
 
-                // Exponential Moving Average
-                half3 acc = lerp(his, cur, _TemporalAlpha);
-                return half4(acc, 1.0);
+                // Exponential Moving Average: RGB + hitFraction (alpha)
+                // hitFraction не нуждается в variance clamping — ghosting некритичен
+                half3 accRGB = lerp(his, cur, _TemporalAlpha);
+                half  accA   = lerp(hisFull.a, curFull.a, _TemporalAlpha);
+                return half4(accRGB, accA);
             }
             ENDHLSL
         }
@@ -460,7 +471,7 @@ Shader "Hidden/SSPT"
                 // 2D kernel = outer product h[dy] · h[dx]
                 const float h[5] = { 0.0625, 0.25, 0.375, 0.25, 0.0625 };
 
-                half3 weightedSum = 0;
+                half4 weightedSum = 0;  // rgba: rgb=radiance, a=hitFraction
                 float totalWeight = 0;
 
                 [unroll]
@@ -484,16 +495,15 @@ Shader "Hidden/SSPT"
                     // Gaussian kernel weight
                     float w = h[dx] * h[dy] * wDepth * wNormal;
 
-                    half3 s = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, suv).rgb;
+                    // Фильтруем rgba: hitFraction денойзится так же, как цвет
+                    half4 s = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, suv);
                     weightedSum += s * w;
                     totalWeight += w;
                 }
 
-                half3 result = (totalWeight > 0.001)
+                return (totalWeight > 0.001)
                     ? weightedSum / totalWeight
-                    : SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, uv).rgb;
-
-                return half4(result, 1.0);
+                    : SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, uv);
             }
             ENDHLSL
         }
@@ -530,8 +540,18 @@ Shader "Hidden/SSPT"
                 if (raw > 0.9999) return sc;
                 #endif
 
-                half3 indirect = SAMPLE_TEXTURE2D(_IndirectTexture, sampler_IndirectTexture, uv).rgb;
-                return half4(sc.rgb + indirect * _IndirectIntensity, sc.a);
+                half4 giSample     = SAMPLE_TEXTURE2D(_IndirectTexture, sampler_IndirectTexture, uv);
+                half3 colorBleeding = giSample.rgb;
+                half  hitFraction   = giSample.a; // 0=открыто, 1=перекрыто соседней геометрией
+
+                // AO: снижаем ambient в перекрытых зонах — компенсируем SH-ambient URP,
+                // который не знает о локальном перекрытии. Чем больше попаданий — тем
+                // сильнее блокировка окружающего света.
+                float ao = 1.0 - hitFraction * _AOStrength;
+
+                // Итог: сцена (с AO-коррекцией) + цветовой отблеск от соседних поверхностей.
+                // Тёмные соседи → только затенение. Цветные → затенение + цветовой bleeding.
+                return half4(sc.rgb * ao + colorBleeding * _IndirectIntensity, sc.a);
             }
             ENDHLSL
         }

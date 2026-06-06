@@ -58,10 +58,14 @@ public class SSPTFeature : ScriptableRendererFeature
 
         [Header("Composite")]
         [Range(0f, 3f)]
-        [Tooltip("Интенсивность добавляемого GI. " +
-                 "Типичные значения: 0.3–0.6. При значении 1.0 + стандартный Ambient " +
-                 "сцена засветляется (ambient и SSPT считают indirect дважды).")]
+        [Tooltip("Интенсивность добавляемого GI (цветовой отблеск от соседних поверхностей). " +
+                 "Типичные значения: 0.3–0.6.")]
         public float indirectIntensity = 0.5f;
+
+        [Range(0f, 1f)]
+        [Tooltip("Сила AO-коррекции: снижает яркость в перекрытых зонах, компенсируя " +
+                 "SH-ambient URP. 0 = только color bleeding. 0.3–0.5 — рекомендуется.")]
+        public float aoStrength = 0.3f;
 
     }
 
