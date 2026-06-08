@@ -296,7 +296,7 @@ Shader "Hidden/SSPT"
                 uint   fi = (uint)_FrameIndex;
 
                 half3 totalRadiance = 0;
-                half  totalHitFrac  = 0;
+                half  totalHitFrac  = 0.001;
 
                 [loop]
                 for (int s = 0; s < 8; s++) // [loop] с compile-time cap = 8
@@ -344,19 +344,15 @@ Shader "Hidden/SSPT"
                     else
                         L = 0; // miss → ambient probe уже обеспечивает sky contribution
 
-                    // Firefly rejection: ограничиваем яркость сэмпла по luminance.
-                    // Без этого один очень яркий пиксель (окно, эмиссив) накапливается
-                    // в истории и даёт стойкое засветление.
-                    half lum = dot(L, half3(0.2126h, 0.7152h, 0.0722h));
-                    if (lum > 2.0h) L *= 2.0h / lum;
-
                     totalRadiance  += L;
                     totalHitFrac   += hitW;
                 }
 
-                float rcpN = 1.0 / (float)max(1, _SampleCount);
+                half3 radiance = totalRadiance / totalHitFrac;
+                half hitFrac = totalHitFrac / (half)_SampleCount;
+
                 // alpha = hitFraction: 0=открыто, 1=полностью перекрыто соседней геометрией
-                return half4(totalRadiance * rcpN, totalHitFrac * rcpN);
+                return half4(radiance, hitFrac);
             }
             ENDHLSL
         }
@@ -547,7 +543,7 @@ Shader "Hidden/SSPT"
                 // AO: снижаем ambient в перекрытых зонах — компенсируем SH-ambient URP,
                 // который не знает о локальном перекрытии. Чем больше попаданий — тем
                 // сильнее блокировка окружающего света.
-                float ao = 1.0 - hitFraction * _AOStrength;
+                float ao = max(0.0, 1.0 - hitFraction * _AOStrength);
 
                 // Итог: сцена (с AO-коррекцией) + цветовой отблеск от соседних поверхностей.
                 // Тёмные соседи → только затенение. Цветные → затенение + цветовой bleeding.
