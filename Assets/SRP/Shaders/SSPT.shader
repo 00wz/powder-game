@@ -533,7 +533,7 @@ Shader "Hidden/SSPT"
                 #endif
 
                 half4 giSample      = SAMPLE_TEXTURE2D(_IndirectTexture, sampler_IndirectTexture, uv);
-                half3 colorBleeding = normalize(giSample.rgb);
+                half3 colorBleeding = giSample.rgb;
                 half  hitFraction   = giSample.a; // 0=открыто, 1=перекрыто соседней геометрией
 
                 // Complement-filter model: соседняя поверхность с отражательной
@@ -557,8 +557,9 @@ Shader "Hidden/SSPT"
                 //   светлый сосед → absorbed << bleeding → осветляет
                 half3 reflectance = saturate(colorBleeding);
                 half3 absorbed    = (1.0h - reflectance);
-                half3 resultColor = max(0.0h, sc.rgb - absorbed * hitFraction * _IndirectIntensity);
-                //return half4(reflectance, sc.a);
+                //half3 resultColor = max(0.0h, sc.rgb - absorbed * hitFraction * _IndirectIntensity);
+                half3 resultColor = lerp(sc.rgb, sc.rgb * reflectance, hitFraction * _IndirectIntensity);
+                //return half4(sc.rgb * reflectance, sc.a);
                 return half4(resultColor, sc.a);
             }
             ENDHLSL
