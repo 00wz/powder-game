@@ -15,18 +15,15 @@ MonoBehaviour:
   m_Active: 1
   settings:
     renderPassEvent: 500
-    samplesPerPixel: 5
-    maxSteps: 78
-    maxDistance: 87.1
-    thickness: 0.43
-    edgeFade: 0.5
-    enableTemporalAccumulation: 1
-    temporalAlpha: 0.36
-    denoiseIterations: 0
-    indirectIntensity: 1
-    useSkyboxFallback: 1
-    skyIntensity: 0
-    fallbackCubemap: {fileID: 0}
+    samplesPerPixel: 3
+    maxSteps: 128
+    maxDistance: 40.5
+    thickness: 0.1
+    edgeFade: 0.066
+    temporalAlpha: 0.188
+    denoiseIterations: 2
+    indirectIntensity: 1.44
+    aoStrength: 0.516
   m_Shader: {fileID: 4800000, guid: c0926b959301c4348a460f0424448272, type: 3}
 --- !u!114 &11400000
 MonoBehaviour:

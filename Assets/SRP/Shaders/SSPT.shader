@@ -39,7 +39,6 @@ Shader "Hidden/SSPT"
         float _TemporalAlpha;     // blend с историей: 1=только текущий кадр
         float _FrameIndex;        // счётчик кадров для анимации шума
         float _DenoiseStepWidth;  // ширина шага для a-trous (1,2,4,8...)
-        float _AOStrength;        // сила AO-коррекции (0=нет, 1=полная)
 
         TEXTURE2D(_HistoryTexture);  SAMPLER(sampler_HistoryTexture);
         TEXTURE2D(_IndirectTexture); SAMPLER(sampler_IndirectTexture);
@@ -296,7 +295,7 @@ Shader "Hidden/SSPT"
                 uint   fi = (uint)_FrameIndex;
 
                 half3 totalRadiance = 0;
-                half  totalHitFrac  = 0;
+                half  totalHitFrac  = 0.0001;
 
                 [loop]
                 for (int s = 0; s < 8; s++) // [loop] с compile-time cap = 8
@@ -344,19 +343,12 @@ Shader "Hidden/SSPT"
                     else
                         L = 0; // miss → ambient probe уже обеспечивает sky contribution
 
-                    // Firefly rejection: ограничиваем яркость сэмпла по luminance.
-                    // Без этого один очень яркий пиксель (окно, эмиссив) накапливается
-                    // в истории и даёт стойкое засветление.
-                    half lum = dot(L, half3(0.2126h, 0.7152h, 0.0722h));
-                    if (lum > 2.0h) L *= 2.0h / lum;
-
                     totalRadiance  += L;
                     totalHitFrac   += hitW;
                 }
 
-                float rcpN = 1.0 / (float)max(1, _SampleCount);
-                // alpha = hitFraction: 0=открыто, 1=полностью перекрыто соседней геометрией
-                return half4(totalRadiance * rcpN, totalHitFrac * rcpN);
+                totalRadiance /= totalHitFrac;
+                return half4(totalRadiance, totalHitFrac / _SampleCount);
             }
             ENDHLSL
         }
@@ -393,31 +385,31 @@ Shader "Hidden/SSPT"
                 half3 cur = curFull.rgb;
                 half3 his = hisFull.rgb;
 
-                // ── Variance Clamping (anti-ghosting) ────────────────────────
-                // Собираем статистику (mean, variance) из 3x3 окрестности текущего кадра.
-                // История за пределами [mean ± k·σ] считается устаревшей и клампится.
-                half3  mean = 0, sq = 0;
-                float2 tx   = 1.0 / _ScreenParams.xy;
+                // // ── Variance Clamping (anti-ghosting) ────────────────────────
+                // // Собираем статистику (mean, variance) из 3x3 окрестности текущего кадра.
+                // // История за пределами [mean ± k·σ] считается устаревшей и клампится.
+                // half3  mean = 0, sq = 0;
+                // float2 tx   = 1.0 / _ScreenParams.xy;
 
-                [unroll]
-                for (int dy = -1; dy <= 1; dy++)
-                [unroll]
-                for (int dx = -1; dx <= 1; dx++)
-                {
-                    half3 s = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp,
-                                               uv + float2(dx, dy) * tx).rgb;
-                    mean += s;
-                    sq   += s * s;
-                }
-                mean /= 9.0;
-                sq   /= 9.0;
+                // [unroll]
+                // for (int dy = -1; dy <= 1; dy++)
+                // [unroll]
+                // for (int dx = -1; dx <= 1; dx++)
+                // {
+                //     half3 s = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp,
+                //                                uv + float2(dx, dy) * tx).rgb;
+                //     mean += s;
+                //     sq   += s * s;
+                // }
+                // mean /= 9.0;
+                // sq   /= 9.0;
 
-                // Дисперсия: E[X²] - E[X]²
-                half3 sigma = sqrt(max(0, sq - mean * mean));
+                // // Дисперсия: E[X²] - E[X]²
+                // half3 sigma = sqrt(max(0, sq - mean * mean));
 
-                // k=2.5: с 1spp variance в 3x3 окрестности высокая, k=1.5 отвергал
-                // историю слишком агрессивно → мерцание и полосы.
-                his = clamp(his, mean - 2.5 * sigma, mean + 2.5 * sigma);
+                // // k=2.5: с 1spp variance в 3x3 окрестности высокая, k=1.5 отвергал
+                // // историю слишком агрессивно → мерцание и полосы.
+                // his = clamp(his, mean - 2.5 * sigma, mean + 2.5 * sigma);
 
                 // Exponential Moving Average: RGB + hitFraction (alpha)
                 // hitFraction не нуждается в variance clamping — ghosting некритичен
@@ -540,18 +532,34 @@ Shader "Hidden/SSPT"
                 if (raw > 0.9999) return sc;
                 #endif
 
-                half4 giSample     = SAMPLE_TEXTURE2D(_IndirectTexture, sampler_IndirectTexture, uv);
-                half3 colorBleeding = giSample.rgb;
+                half4 giSample      = SAMPLE_TEXTURE2D(_IndirectTexture, sampler_IndirectTexture, uv);
+                half3 colorBleeding = normalize(giSample.rgb);
                 half  hitFraction   = giSample.a; // 0=открыто, 1=перекрыто соседней геометрией
 
-                // AO: снижаем ambient в перекрытых зонах — компенсируем SH-ambient URP,
-                // который не знает о локальном перекрытии. Чем больше попаданий — тем
-                // сильнее блокировка окружающего света.
-                float ao = 1.0 - hitFraction * _AOStrength;
-
-                // Итог: сцена (с AO-коррекцией) + цветовой отблеск от соседних поверхностей.
-                // Тёмные соседи → только затенение. Цветные → затенение + цветовой bleeding.
-                return half4(sc.rgb * ao + colorBleeding * _IndirectIntensity, sc.a);
+                // Complement-filter model: соседняя поверхность с отражательной
+                // способностью r одновременно:
+                //   · отражает r × L_ambient  → colorBleeding (уже посчитано)
+                //   · поглощает (1−r) × L_ambient → убираем из сцены
+                //
+                // reflectance ≈ saturate(colorBleeding): clamped в [0,1] для HDR-безопасности
+                // (полный colorBleeding в HDR используется только в additive-слагаемом).
+                //
+                // Эффекты по цвету соседа:
+                //   белый  → поглощение ≈ 0,   чистый color blend  → нейтрально/чуть светлее
+                //   серый  → при aoStr≈giStr эффект ≈ 0            → симметрия
+                //   чёрный → поглощение = 1,   bleeding = 0        → чистый SSAO
+                //   красный→ поглощает G+B, отдаёт R               → красный tint
+                // Complement-filter: _IndirectIntensity управляет обоими эффектами одновременно.
+                // Поглощение и bleeding масштабируются единым параметром → итоговый знак эффекта
+                // (потемнение или осветление) определяется только цветом соседней геометрии:
+                //   тёмный сосед  → absorbed >> bleeding → затемняет  (SSAO)
+                //   серый сосед   → absorbed ≈ bleeding  → нейтрально
+                //   светлый сосед → absorbed << bleeding → осветляет
+                half3 reflectance = saturate(colorBleeding);
+                half3 absorbed    = (1.0h - reflectance);
+                half3 resultColor = max(0.0h, sc.rgb - absorbed * hitFraction * _IndirectIntensity);
+                //return half4(reflectance, sc.a);
+                return half4(resultColor, sc.a);
             }
             ENDHLSL
         }

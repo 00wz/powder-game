@@ -41,7 +41,6 @@ public class SSPTPass : ScriptableRenderPass
     static readonly int k_DenoiseStepWidth  = Shader.PropertyToID("_DenoiseStepWidth");
     static readonly int k_HistoryTex        = Shader.PropertyToID("_HistoryTexture");
     static readonly int k_IndirectTex       = Shader.PropertyToID("_IndirectTexture");
-    static readonly int k_AOStrength        = Shader.PropertyToID("_AOStrength");
 
     // PassData: всё что нужно render func во время execute (после записи графа)
     // RenderGraph копирует это значение — НЕ используем ссылки на стек!
@@ -295,7 +294,6 @@ public class SSPTPass : ScriptableRenderPass
                 // denoiseRT.rt — реальная RenderTexture из persistent RTHandle
                 data.mat.SetTexture(k_IndirectTex, data.denoiseRT.rt);
                 data.mat.SetFloat(k_IndirectIntensity, data.settings.indirectIntensity);
-                data.mat.SetFloat(k_AOStrength, data.settings.aoStrength);
                 Blitter.BlitTexture(ctx.cmd, data.src, new Vector4(1, 1, 0, 0), data.mat, 3);
             });
         }
