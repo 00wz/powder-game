@@ -266,6 +266,11 @@ Shader "Hidden/SSPT"
             return DecodeHDREnvironment(enc, _SSPT_SkyCube_HDR);
         }
 
+        half MaxComponent(half3 v)
+        {
+            return max(v.x, max(v.y, v.z));
+        }
+
         ENDHLSL
 
         // ═════════════════════════════════════════════════════════════════════
@@ -554,7 +559,7 @@ Shader "Hidden/SSPT"
                 #endif
 
                 half3 indirect = SAMPLE_TEXTURE2D(_IndirectTexture, sampler_IndirectTexture, uv).rgb;
-                return half4(sc.rgb + indirect * _IndirectIntensity, sc.a);
+                return half4(sc.rgb + (indirect - MaxComponent(indirect))  * _IndirectIntensity, sc.a);
             }
             ENDHLSL
         }

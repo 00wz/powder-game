@@ -31,7 +31,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b2c7e9415e0e1a04c946f48b74f8a6d1, type: 3}
   m_Name: SSPTFeature
   m_EditorClassIdentifier: 
-  m_Active: 0
+  m_Active: 1
   settings:
     renderPassEvent: 500
     samplesPerPixel: 1
@@ -39,10 +39,10 @@ MonoBehaviour:
     maxDistance: 25
     thickness: 0.3
     edgeFade: 0.12
-    temporalAlpha: 0.1
-    denoiseIterations: 3
-    indirectIntensity: 2.05
-    useSkyboxFallback: 1
+    temporalAlpha: 1
+    denoiseIterations: 4
+    indirectIntensity: 2.44
+    useSkyboxFallback: 0
     fallbackCubemap: {fileID: 0}
   m_Shader: {fileID: 4800000, guid: c0926b959301c4348a460f0424448272, type: 3}
 --- !u!114 &11400000
@@ -71,8 +71,7 @@ MonoBehaviour:
     probeVolumeBlendStatesCS: {fileID: 0}
   m_RendererFeatures:
   - {fileID: -6108364595486931978}
-  - {fileID: -6146528329435283508}
-  m_RendererFeatureMap: f6c36d8fc3ba3aabcc7f22d20c25b3aa
+  m_RendererFeatureMap: f6c36d8fc3ba3aab
   m_UseNativeRenderPass: 0
   xrSystemData: {fileID: 0}
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
