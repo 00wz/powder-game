@@ -26,7 +26,8 @@ Shader "Hidden/SSR"
         #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
         #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareNormalsTexture.hlsl"
         #include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
-        
+        #include "HiZCommon.hlsl"
+
         // Skybox cubemap (передаётся из C#)
         TEXTURECUBE(_SSR_SkyCube);
         SAMPLER(sampler_SSR_SkyCube);
@@ -328,15 +329,58 @@ Shader "Hidden/SSR"
             
             return half4(lerp(sceneColor.rgb, reflectionColor, reflectionStrength), sceneColor.a);
         }
+
+        // Визуализация Hi-Z пирамиды для отладки/подбора настроек: левая половина экрана -
+        // min глубина выбранного уровня, правая половина - max глубина того же уровня.
+        float _HiZDebugMipIndex;
+
+        half4 HiZDebugFrag(Varyings input) : SV_Target
+        {
+            float2 uv = input.texcoord;
+
+            int levelCount = max((int)_HiZLevelCount, 1);
+            int level = clamp((int)_HiZDebugMipIndex, 0, levelCount - 1);
+
+            bool showMax = uv.x > 0.5;
+            float2 sampleUV = float2(showMax ? (uv.x - 0.5) * 2.0 : uv.x * 2.0, uv.y);
+
+            float2 minMax = SampleHiZLevel(sampleUV, level);
+            float rawDepth = showMax ? minMax.y : minMax.x;
+            float linear01 = GetLinearDepth01(rawDepth);
+
+            // GetLinearDepth01 normalizes by the camera's far plane, so with a typical far
+            // distance nearby geometry compresses into a near-zero range that reads as flat
+            // black. This curve is purely a contrast boost for readability of this debug view -
+            // it does not affect the stored pyramid values or any future tracing.
+            float debugContrast = pow(saturate(linear01), 0.25);
+
+            half3 color = half3(debugContrast, debugContrast, debugContrast);
+
+            // Разделительная линия по центру между min (слева) и max (справа).
+            if (abs(uv.x - 0.5) < 0.0015)
+                color = half3(1.0h, 0.0h, 0.0h);
+
+            return half4(color, 1.0h);
+        }
         ENDHLSL
 
         Pass
         {
             Name "SSR"
-            
+
             HLSLPROGRAM
             #pragma vertex Vert
             #pragma fragment Frag
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "HiZDebug"
+
+            HLSLPROGRAM
+            #pragma vertex Vert
+            #pragma fragment HiZDebugFrag
             ENDHLSL
         }
     }
