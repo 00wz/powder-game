@@ -224,6 +224,141 @@ Shader "Hidden/SSR"
             return float4(0, 0, 0, 0);
         }
 
+        // === Hi-Z Min-Max Tracing ===========================================
+        // Cell-based hierarchical traversal (GPU Pro 5 / Stingray / AMD FidelityFX
+        // SSSR style): the ray is advanced through screen-space texel cells using a
+        // fully parametric ray/cell-boundary and ray/depth-plane intersection test,
+        // not point-sampling. Within a cell the ray's depth changes continuously as
+        // it moves in X/Y, so comparing one interpolated depth sample against the
+        // cell's stored max is not sufficient - what matters is which happens FIRST
+        // as the ray advances: leaving the cell's XY footprint, or reaching the
+        // cell's nearest-possible-occluder depth plane. Both are solved in closed
+        // form (as ray parameter t, in mip0-pixel units) and compared directly.
+        //
+        // NDC device depth is affine in screen-space distance along a straight 2D
+        // screen-space line (the same property that lets GPU rasterizer hardware
+        // z-interpolate linearly across a triangle without perspective correction),
+        // so the depth-plane crossing has an exact closed-form solution - no
+        // iterative refinement needed. Because mip 0's stored max IS the exact
+        // per-pixel scene depth (see HiZDepthPyramid.shader's Init pass), and a hit
+        // is only ever accepted once the traversal has descended all the way to mip
+        // 0, the returned hit position is already exact to the depth buffer's own
+        // texel resolution - unlike RayMarch's fixed-size steps, there is no
+        // precision gap between samples for a binary search to recover.
+
+        bool HiZIsBehindOrAt(float rayDepth, float surfaceDepth)
+        {
+#if UNITY_REVERSED_Z
+            return rayDepth <= surfaceDepth;
+#else
+            return rayDepth >= surfaceDepth;
+#endif
+        }
+
+        float4 HiZTrace(float3 viewOrigin, float3 viewDir, float2 screenUV)
+        {
+            float3 startSS = ViewToScreen(viewOrigin);
+            float3 endSS = ViewToScreen(viewOrigin + viewDir * _MaxDistance);
+
+            float2 realSize = _HiZScreenSize.xy;
+            float2 startPx = startSS.xy * realSize;
+            float2 endPx = endSS.xy * realSize;
+
+            float2 deltaPx = endPx - startPx;
+            float distPx = length(deltaPx);
+            if (distPx < 1.0)
+                return float4(0, 0, 0, 0);
+
+            float2 dir = deltaPx / distPx;
+            // Cell-boundary math divides by direction components - keep them safely non-zero.
+            float2 safeDir = float2(
+                abs(dir.x) < 1e-5 ? (dir.x < 0.0 ? -1e-5 : 1e-5) : dir.x,
+                abs(dir.y) < 1e-5 ? (dir.y < 0.0 ? -1e-5 : 1e-5) : dir.y);
+
+            float deltaDepth = endSS.z - startSS.z;
+            bool depthVaries = abs(deltaDepth) > 1e-8;
+            float invDeltaDepth = depthVaries ? (1.0 / deltaDepth) : 0.0;
+
+            // Small jittered start offset (in pixels) to reduce banding/self-intersection,
+            // mirroring the jitter RayMarch applies to its own starting position.
+            float jitter = InterleavedGradientNoise(screenUV * _ScreenParams.xy);
+            float t = 1.0 + (jitter - 0.5) * _JitterStrength;
+
+            int maxLevel = max((int)_HiZLevelCount - 1, 0);
+            int level = 0;
+
+            const int HIZ_MAX_ITER = 128;
+            int iterCount = min((int)_MaxSteps, HIZ_MAX_ITER);
+
+            [loop]
+            for (int i = 0; i < HIZ_MAX_ITER; i++)
+            {
+                if (i >= iterCount || t >= distPx)
+                    break;
+
+                float2 pos = startPx + dir * t;
+                if (pos.x < 0.0 || pos.x >= realSize.x || pos.y < 0.0 || pos.y >= realSize.y)
+                    return float4(0, 0, 0, 0);
+
+                // UV is resolution-independent, so it must always be normalized against the
+                // BASE (level 0) padded canvas size, never the current level's own (smaller)
+                // size - _HiZMipInfo[level] only describes that level's texel count, not a
+                // valid UV denominator for a `pos` given in base-resolution pixel units.
+                float2 uvPyramid = pos / _HiZMipInfo[0].xy;
+                float2 minMax = SampleHiZLevel(uvPyramid, level);
+
+                // t at which the ray's depth reaches this cell's nearest possible occluder.
+                // Whether "not yet reached" (dt > 0, still ahead) or "already behind" is
+                // checked explicitly via HiZIsBehindOrAt rather than inferred from the sign of
+                // the closed-form solve, so this is correct regardless of whether the ray's
+                // depth is increasing or decreasing along its length (a reflection can curve
+                // back toward the camera, not just away from it).
+                float currentDepth = lerp(startSS.z, endSS.z, saturate(t / distPx));
+                float tDepth;
+                if (HiZIsBehindOrAt(currentDepth, minMax.y))
+                    tDepth = t;
+                else if (depthVaries)
+                    tDepth = max((minMax.y - startSS.z) * invDeltaDepth * distPx, t);
+                else
+                    tDepth = 1e8;
+
+                // t at which the ray leaves the current cell's XY footprint.
+                float cellSize = (float)(1u << level);
+                float2 cellIndex = floor(pos / cellSize);
+                float2 boundary = (cellIndex + step(0.0, safeDir)) * cellSize;
+                float2 tAxis = (boundary - startPx) / safeDir;
+                float tCell = max(min(tAxis.x, tAxis.y), t);
+
+                float tNext = min(tCell, tDepth);
+
+                if (tDepth <= tCell)
+                {
+                    // The ray reaches the depth plane before leaving the cell - candidate hit.
+                    if (level == 0)
+                    {
+                        float hitT = tNext;
+                        float2 hitUV = (startPx + dir * hitT) / realSize;
+
+                        float2 edgeFade = smoothstep(0, _EdgeFade, hitUV) *
+                                          smoothstep(0, _EdgeFade, 1.0 - hitUV);
+                        float screenFade = edgeFade.x * edgeFade.y;
+                        float distFade = 1.0 - saturate(hitT / distPx);
+
+                        return float4(hitUV, 1.0, screenFade * distFade);
+                    }
+
+                    level--;
+                }
+                else
+                {
+                    level = min(level + 1, maxLevel);
+                }
+
+                t = tNext + 0.05;
+            }
+
+            return float4(0, 0, 0, 0);
+        }
 
         half3 GetSkyBoxColor(float3 dirVS)
         {
@@ -287,8 +422,12 @@ Shader "Hidden/SSR"
             // Fresnel эффект - отражения сильнее на пологих углах
             float fresnel = pow(1.0 - saturate(dot(-viewDir, normalVS)), 3.0);
             
-            // Ray march
+            // Ray march / Hi-Z trace
+#if defined(_SSR_TRACING_HIZ)
+            float4 hitResult = HiZTrace(viewPos, reflectDir, uv);
+#else
             float4 hitResult = RayMarch(viewPos, reflectDir, uv);
+#endif
             
             half3 reflectionColor;
             float reflectionStrength;
@@ -371,6 +510,7 @@ Shader "Hidden/SSR"
             HLSLPROGRAM
             #pragma vertex Vert
             #pragma fragment Frag
+            #pragma multi_compile _ _SSR_TRACING_HIZ
             ENDHLSL
         }
 

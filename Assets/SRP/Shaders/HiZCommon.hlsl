@@ -25,6 +25,12 @@ float _HiZLevelCount;
 // Per level: xy = resolution in texels, zw = 1/resolution (texel size).
 float4 _HiZMipInfo[HIZ_MAX_MIPS];
 
+// Real (unpadded) screen resolution the pyramid was built from: xy = size, zw = 1/size.
+// The pyramid textures themselves are padded up to a power of two (see
+// SSRPass.BuildHiZPyramid / HiZDepthPyramid.shader), so tracing must clamp against this
+// real size, not the padded per-level sizes in _HiZMipInfo.
+float4 _HiZScreenSize;
+
 // Returns (min, max) raw device depth stored at the given pyramid level.
 // `level` must already be clamped to [0, _HiZLevelCount - 1] by the caller.
 float2 SampleHiZLevel(float2 uv, int level)

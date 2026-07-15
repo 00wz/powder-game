@@ -32,7 +32,13 @@ public class SSRPass : ScriptableRenderPass
     private static readonly int HiZLevelCountId = Shader.PropertyToID("_HiZLevelCount");
     private static readonly int HiZMipInfoArrayId = Shader.PropertyToID("_HiZMipInfo");
     private static readonly int HiZDebugMipIndexId = Shader.PropertyToID("_HiZDebugMipIndex");
+    private static readonly int HiZScreenSizeId = Shader.PropertyToID("_HiZScreenSize");
     private static readonly int[] HiZMipTexIds = BuildHiZMipTexIds();
+
+    private const string HiZKeyword = "_SSR_TRACING_HIZ";
+
+    // Reused to avoid a per-draw GC allocation when uploading the mip-info array.
+    private static readonly Vector4[] s_HiZMipInfoScratch = new Vector4[HiZMaxMips];
 
     private static readonly int SrcMipInfoId = Shader.PropertyToID("_SrcMipInfo");
     private static readonly int DstMipInfoId = Shader.PropertyToID("_DstMipInfo");
@@ -76,6 +82,12 @@ public class SSRPass : ScriptableRenderPass
         public TextureHandle sourceTexture;
         public TextureHandle destinationTexture;
         public SSRFeature.Settings settings;
+
+        // Only populated (and only read in SetRenderFunc) when settings.tracingMethod is HiZMinMax.
+        public TextureHandle[] hizMips;
+        public Vector4[] hizMipInfos;
+        public int hizLevelCount;
+        public Vector4 hizScreenSize;
     }
 
     private class PyramidPassData
@@ -120,12 +132,13 @@ public class SSRPass : ScriptableRenderPass
     // чтобы одинаково работать на всех платформах включая WebGL). Каждый уровень - отдельный
     // TextureHandle, поэтому ни один pass не читает и не пишет один и тот же GPU-ресурс
     // на разных мип-уровнях одновременно.
-    private TextureHandle[] BuildHiZPyramid(RenderGraph renderGraph, UniversalCameraData cameraData, out Vector4[] mipInfos, out int levelCount)
+    private TextureHandle[] BuildHiZPyramid(RenderGraph renderGraph, UniversalCameraData cameraData, out Vector4[] mipInfos, out int levelCount, out Vector4 realSizeOut)
     {
         var descriptor = cameraData.cameraTargetDescriptor;
         int realWidth = Mathf.Max(1, Mathf.RoundToInt(descriptor.width * m_Settings.pyramidResolutionScale));
         int realHeight = Mathf.Max(1, Mathf.RoundToInt(descriptor.height * m_Settings.pyramidResolutionScale));
         var realSize = new Vector4(realWidth, realHeight, 1f / realWidth, 1f / realHeight);
+        realSizeOut = realSize;
 
         // Pad up to a power of two so every level is exactly half the previous one in both
         // dimensions - see the comment at the top of HiZDepthPyramid.shader for why.
@@ -233,7 +246,7 @@ public class SSRPass : ScriptableRenderPass
 
         if (m_Settings.debugMode == SSRFeature.HiZDebugMode.ShowPyramidMip)
         {
-            TextureHandle[] debugMips = BuildHiZPyramid(renderGraph, cameraData, out Vector4[] debugMipInfos, out int debugLevelCount);
+            TextureHandle[] debugMips = BuildHiZPyramid(renderGraph, cameraData, out Vector4[] debugMipInfos, out int debugLevelCount, out _);
 
             using (var builder = renderGraph.AddRasterRenderPass<HiZDebugPassData>("SSR HiZ Debug View", out var passData))
             {
@@ -255,10 +268,9 @@ public class SSRPass : ScriptableRenderPass
                     for (int i = 0; i < data.mips.Length; i++)
                         data.material.SetTexture(HiZMipTexIds[i], data.mips[i]);
 
-                    var infoArray = new Vector4[HiZMaxMips];
                     for (int i = 0; i < data.mipInfos.Length; i++)
-                        infoArray[i] = data.mipInfos[i];
-                    data.material.SetVectorArray(HiZMipInfoArrayId, infoArray);
+                        s_HiZMipInfoScratch[i] = data.mipInfos[i];
+                    data.material.SetVectorArray(HiZMipInfoArrayId, s_HiZMipInfoScratch);
 
                     data.material.SetFloat(HiZLevelCountId, data.levelCount);
                     data.material.SetFloat(HiZDebugMipIndexId, data.debugMipIndex);
@@ -284,6 +296,16 @@ public class SSRPass : ScriptableRenderPass
 
         int passCount = Mathf.Max(1, m_Settings.passCount);
 
+        bool useHiZ = m_Settings.tracingMethod == SSRFeature.TracingMethod.HiZMinMax;
+        TextureHandle[] hizMips = null;
+        Vector4[] hizMipInfos = null;
+        int hizLevelCount = 0;
+        Vector4 hizScreenSize = default;
+        if (useHiZ)
+        {
+            hizMips = BuildHiZPyramid(renderGraph, cameraData, out hizMipInfos, out hizLevelCount, out hizScreenSize);
+        }
+
         texDesc.name = "_SSRTexture_A";
         TextureHandle texA = renderGraph.CreateTexture(texDesc);
         texDesc.name = "_SSRTexture_B";
@@ -303,10 +325,20 @@ public class SSRPass : ScriptableRenderPass
                 passData.sourceTexture = src;
                 passData.destinationTexture = dst;
                 passData.settings = m_Settings;
+                passData.hizMips = hizMips;
+                passData.hizMipInfos = hizMipInfos;
+                passData.hizLevelCount = hizLevelCount;
+                passData.hizScreenSize = hizScreenSize;
 
                 builder.UseTexture(passData.sourceTexture, AccessFlags.Read);
                 builder.SetRenderAttachment(dst, 0, AccessFlags.Write);
                 builder.AllowGlobalStateModification(true);
+
+                if (useHiZ)
+                {
+                    for (int m = 0; m < hizMips.Length; m++)
+                        builder.UseTexture(hizMips[m], AccessFlags.Read);
+                }
 
                 builder.SetRenderFunc((PassData data, RasterGraphContext context) =>
                 {
@@ -316,6 +348,25 @@ public class SSRPass : ScriptableRenderPass
                     data.material.SetFloat(MaxDistanceId, data.settings.maxDistance);
                     data.material.SetFloat(IntensityId, data.settings.intensity);
                     data.material.SetFloat(EdgeFadeId, data.settings.edgeFade);
+
+                    if (data.settings.tracingMethod == SSRFeature.TracingMethod.HiZMinMax)
+                    {
+                        data.material.EnableKeyword(HiZKeyword);
+
+                        for (int m = 0; m < data.hizMips.Length; m++)
+                            data.material.SetTexture(HiZMipTexIds[m], data.hizMips[m]);
+
+                        for (int m = 0; m < data.hizMipInfos.Length; m++)
+                            s_HiZMipInfoScratch[m] = data.hizMipInfos[m];
+                        data.material.SetVectorArray(HiZMipInfoArrayId, s_HiZMipInfoScratch);
+
+                        data.material.SetFloat(HiZLevelCountId, data.hizLevelCount);
+                        data.material.SetVector(HiZScreenSizeId, data.hizScreenSize);
+                    }
+                    else
+                    {
+                        data.material.DisableKeyword(HiZKeyword);
+                    }
 
                     data.material.SetFloat(UseSkyboxFallbackId, data.settings.useSkyboxFallback ? 1f : 0f);
                     if (data.settings.useSkyboxFallback)
