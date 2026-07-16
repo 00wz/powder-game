@@ -157,8 +157,8 @@ MonoBehaviour:
     renderPassEvent: 500
     tracingMethod: 1
     maxSteps: 128
-    maxDistance: 51.1
-    thickness: 0.039
+    maxDistance: 3.7
+    thickness: 0.39
     jitterStrength: 0
     intensity: 1
     edgeFade: 0.144
