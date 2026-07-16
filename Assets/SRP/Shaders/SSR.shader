@@ -255,10 +255,75 @@ Shader "Hidden/SSR"
 #endif
         }
 
+        // Solves for the ray parameter t (>= currentT) at which the ray's depth first
+        // becomes "behind or at" `targetDepth` (see HiZIsBehindOrAt), or returns a very
+        // large sentinel if that never happens for the remainder of the ray.
+        //
+        // A reflection ray's depth does not necessarily move away from the camera for its
+        // whole length - it can curve back toward it (e.g. near-grazing reflections off a
+        // steeply angled surface). Once the ray is confirmed NOT behind `targetDepth` yet,
+        // whether it can EVER become behind it later depends on which way its depth is
+        // moving relative to the active depth convention:
+        //  - moving in the "away" direction (reversed-Z: depth decreasing; otherwise
+        //    increasing): the ray is closing in on `targetDepth` and WILL cross it at the
+        //    algebraic solution, which is guaranteed to lie ahead of currentT.
+        //  - moving in the "toward camera" direction: the ray is moving further from ever
+        //    satisfying HiZIsBehindOrAt against this specific target - it can only have
+        //    been behind it in the past (already handled by the "currently behind" check
+        //    above), never in the future, so this cell can never register a hit going
+        //    forward and must be reported as unreachable (the sentinel), not solved for.
+        // Treating both directions with the same closed-form formula (as an earlier version
+        // of this function did) silently assumes the first case always holds; for the
+        // second case the algebraic solution lands in the past, and naively clamping it
+        // forward to currentT turns every step of a toward-camera ray into a false
+        // immediate hit - which is exactly the "reflections cut off at grazing angles" bug
+        // this function exists to avoid.
+        float HiZSolveDepthCrossing(float currentT, float currentDepth, float targetDepth,
+                                     float startDepth, float deltaDepth, float invDeltaDepth, float distPx)
+        {
+            if (HiZIsBehindOrAt(currentDepth, targetDepth))
+                return currentT;
+
+            if (abs(deltaDepth) <= 1e-8)
+                return 1e8; // Depth does not change along the ray - it will never reach a different value.
+
+#if UNITY_REVERSED_Z
+            bool approachingTarget = deltaDepth < 0.0;
+#else
+            bool approachingTarget = deltaDepth > 0.0;
+#endif
+            if (!approachingTarget)
+                return 1e8;
+
+            return max((targetDepth - startDepth) * invDeltaDepth * distPx, currentT);
+        }
+
+        // Clamps the view-space marching distance so viewOrigin + viewDir * distance never
+        // crosses (or gets numerically close to) the camera's near plane. ViewToScreen()'s
+        // perspective divide (clip.w = -viewZ) is only well-behaved in front of the camera:
+        // as a point approaches the near plane, w -> 0 and its projected screen position/depth
+        // blow up toward infinity, then flip sign once actually behind it. Reflections
+        // routinely curve back toward the camera at grazing angles (viewDir.z > 0), so this is
+        // a real, reachable case - the ray must be clipped the same way a rasterizer clips
+        // triangles against the near plane before the perspective divide, rather than trusting
+        // the raw _MaxDistance endpoint to always be safely projectable.
+        float HiZClipDistanceToNearPlane(float3 viewOrigin, float3 viewDir, float maxDistance)
+        {
+            if (unity_OrthoParams.w > 0.5 || viewDir.z <= 0.0)
+                return maxDistance; // Orthographic has no perspective singularity; moving away
+                                     // from the camera never approaches the near plane.
+
+            // Small safety margin so w stays comfortably away from zero, not just non-negative.
+            float nearZ = -_ProjectionParams.y * 1.05;
+            float distToNearPlane = (nearZ - viewOrigin.z) / viewDir.z;
+            return clamp(distToNearPlane, 0.0, maxDistance);
+        }
+
         float4 HiZTrace(float3 viewOrigin, float3 viewDir, float2 screenUV)
         {
             float3 startSS = ViewToScreen(viewOrigin);
-            float3 endSS = ViewToScreen(viewOrigin + viewDir * _MaxDistance);
+            float clippedDistance = HiZClipDistanceToNearPlane(viewOrigin, viewDir, _MaxDistance);
+            float3 endSS = ViewToScreen(viewOrigin + viewDir * clippedDistance);
 
             float2 realSize = _HiZScreenSize.xy;
             float2 startPx = startSS.xy * realSize;
@@ -307,20 +372,12 @@ Shader "Hidden/SSR"
                 float2 uvPyramid = pos / _HiZMipInfo[0].xy;
                 float2 minMax = SampleHiZLevel(uvPyramid, level);
 
-                // t at which the ray's depth reaches this cell's nearest possible occluder.
-                // Whether "not yet reached" (dt > 0, still ahead) or "already behind" is
-                // checked explicitly via HiZIsBehindOrAt rather than inferred from the sign of
-                // the closed-form solve, so this is correct regardless of whether the ray's
-                // depth is increasing or decreasing along its length (a reflection can curve
-                // back toward the camera, not just away from it).
+                // t at which the ray's depth reaches this cell's nearest possible occluder -
+                // see HiZSolveDepthCrossing for why both ray directions (away from vs toward
+                // the camera) need to be handled explicitly here.
                 float currentDepth = lerp(startSS.z, endSS.z, saturate(t / distPx));
-                float tDepth;
-                if (HiZIsBehindOrAt(currentDepth, minMax.y))
-                    tDepth = t;
-                else if (depthVaries)
-                    tDepth = max((minMax.y - startSS.z) * invDeltaDepth * distPx, t);
-                else
-                    tDepth = 1e8;
+                float tDepth = HiZSolveDepthCrossing(t, currentDepth, minMax.y, startSS.z,
+                                                      deltaDepth, invDeltaDepth, distPx);
 
                 // t at which the ray leaves the current cell's XY footprint.
                 float cellSize = (float)(1u << level);
