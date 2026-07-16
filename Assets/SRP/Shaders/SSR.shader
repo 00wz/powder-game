@@ -86,6 +86,26 @@ Shader "Hidden/SSR"
             return LinearEyeDepth(rawDepth, _ZBufferParams);
         }
 
+        // Inverse of GetLinearEyeDepth: converts a linear eye-space depth back into raw
+        // device depth. Used by the Hi-Z thickness test, which needs to add a fixed
+        // world-space _Thickness to a stored raw depth value - eye depth is the only one of
+        // the two spaces where "add a fixed distance" is meaningful, since raw depth is
+        // highly non-linear in true distance.
+        float EyeDepthToRawDepth(float eyeDepth)
+        {
+            if (unity_OrthoParams.w > 0.5) // Orthographic
+            {
+                float linear01 = (eyeDepth - _ProjectionParams.y) / (_ProjectionParams.z - _ProjectionParams.y);
+                #if UNITY_REVERSED_Z
+                    return 1.0 - linear01;
+                #else
+                    return linear01;
+                #endif
+            }
+            float invEye = 1.0 / max(eyeDepth, 1e-6);
+            return (invEye - _ZBufferParams.w) / _ZBufferParams.z;
+        }
+
         // Реконструкция позиции в View Space из UV и глубины
         float3 ReconstructViewPosition(float2 uv, float depth)
         {
@@ -298,6 +318,47 @@ Shader "Hidden/SSR"
             return max((targetDepth - startDepth) * invDeltaDepth * distPx, currentT);
         }
 
+        // Thickness-aware occlusion classification for a Hi-Z cell. A depth buffer only ever
+        // stores the front-facing surface at each texel, with no information about how far
+        // back solid geometry actually extends - treating that single value as an infinitely
+        // thick wall means a ray that should legitimately continue behind a thin foreground
+        // object (a lamppost, a railing, ...) instead stops dead at its front face._Thickness
+        // bounds how far behind a stored depth value the ray is still considered "on the
+        // surface"; further than that, the ray is assumed to have exited the back of the
+        // (assumed-thin) object into open space and should keep marching.
+        //
+        // minMax.y (nearest possible surface in the cell) still gates whether the ray could
+        // have hit anything at all, exactly as before. minMax.x (farthest possible surface)
+        // does the complementary job: once the ray is behind minMax.x by more than
+        // _Thickness, it has tunnelled past even the most distant geometry the cell could
+        // contain, with margin, so nothing in this cell can produce a valid hit any more -
+        // this is what lets the traversal skip past a run of thin-occluder cells via the
+        // hierarchy instead of being forced down to mip 0 for every single one of them.
+        //
+        // Returns:
+        //   0 = not reached yet   - ray is still in front of the near plane (definitely clear
+        //                           so far); `outNearT` receives the future t (>= currentT) at
+        //                           which it would enter the window, for skipping ahead to.
+        //   1 = inside the window - within _Thickness of some surface in the cell; `outNearT`
+        //                           equals currentT (the window is entered right now).
+        //   2 = tunnelled through - behind even minMax.x by more than _Thickness; nothing here
+        //                           can register a hit. `outNearT` equals currentT.
+        int HiZClassifyOcclusion(float currentT, float currentDepth, float2 minMax,
+                                  float startDepth, float deltaDepth, float invDeltaDepth, float distPx,
+                                  out float outNearT)
+        {
+            if (!HiZIsBehindOrAt(currentDepth, minMax.y))
+            {
+                outNearT = HiZSolveDepthCrossing(currentT, currentDepth, minMax.y, startDepth, deltaDepth, invDeltaDepth, distPx);
+                return 0;
+            }
+
+            outNearT = currentT;
+
+            float farThreshold = EyeDepthToRawDepth(GetLinearEyeDepth(minMax.x) + _Thickness);
+            return HiZIsBehindOrAt(currentDepth, farThreshold) ? 2 : 1;
+        }
+
         // Clamps the view-space marching distance so viewOrigin + viewDir * distance never
         // crosses (or gets numerically close to) the camera's near plane. ViewToScreen()'s
         // perspective divide (clip.w = -viewZ) is only well-behaved in front of the camera:
@@ -319,7 +380,7 @@ Shader "Hidden/SSR"
             return clamp(distToNearPlane, 0.0, maxDistance);
         }
 
-        float4 HiZTrace(float3 viewOrigin, float3 viewDir, float2 screenUV)
+        float4 HiZTrace(float3 viewOrigin, float3 viewDir)
         {
             float3 startSS = ViewToScreen(viewOrigin);
             float clippedDistance = HiZClipDistanceToNearPlane(viewOrigin, viewDir, _MaxDistance);
@@ -344,10 +405,12 @@ Shader "Hidden/SSR"
             bool depthVaries = abs(deltaDepth) > 1e-8;
             float invDeltaDepth = depthVaries ? (1.0 / deltaDepth) : 0.0;
 
-            // Small jittered start offset (in pixels) to reduce banding/self-intersection,
-            // mirroring the jitter RayMarch applies to its own starting position.
-            float jitter = InterleavedGradientNoise(screenUV * _ScreenParams.xy);
-            float t = 1.0 + (jitter - 0.5) * _JitterStrength;
+            // A fixed small starting offset (in pixels) is enough to avoid self-intersection
+            // with the reflecting surface itself. Unlike RayMarch, HiZTrace does not sample at
+            // discrete fixed-size steps - every hit is an exact closed-form crossing point, so
+            // there is no fixed step grid for per-pixel jitter to dither/de-band; _JitterStrength
+            // intentionally has no effect here.
+            float t = 1.0;
 
             int maxLevel = max((int)_HiZLevelCount - 1, 0);
             int level = 0;
@@ -372,12 +435,10 @@ Shader "Hidden/SSR"
                 float2 uvPyramid = pos / _HiZMipInfo[0].xy;
                 float2 minMax = SampleHiZLevel(uvPyramid, level);
 
-                // t at which the ray's depth reaches this cell's nearest possible occluder -
-                // see HiZSolveDepthCrossing for why both ray directions (away from vs toward
-                // the camera) need to be handled explicitly here.
                 float currentDepth = lerp(startSS.z, endSS.z, saturate(t / distPx));
-                float tDepth = HiZSolveDepthCrossing(t, currentDepth, minMax.y, startSS.z,
-                                                      deltaDepth, invDeltaDepth, distPx);
+                float tNear;
+                int occlusion = HiZClassifyOcclusion(t, currentDepth, minMax, startSS.z,
+                                                      deltaDepth, invDeltaDepth, distPx, tNear);
 
                 // t at which the ray leaves the current cell's XY footprint.
                 float cellSize = (float)(1u << level);
@@ -386,32 +447,47 @@ Shader "Hidden/SSR"
                 float2 tAxis = (boundary - startPx) / safeDir;
                 float tCell = max(min(tAxis.x, tAxis.y), t);
 
-                float tNext = min(tCell, tDepth);
-
-                if (tDepth <= tCell)
+                if (occlusion == 1)
                 {
-                    // The ray reaches the depth plane before leaving the cell - candidate hit.
+                    // Within _Thickness of some surface in the cell - candidate hit.
                     if (level == 0)
                     {
-                        float hitT = tNext;
-                        float2 hitUV = (startPx + dir * hitT) / realSize;
+                        float2 hitUV = pos / realSize;
 
                         float2 edgeFade = smoothstep(0, _EdgeFade, hitUV) *
                                           smoothstep(0, _EdgeFade, 1.0 - hitUV);
                         float screenFade = edgeFade.x * edgeFade.y;
-                        float distFade = 1.0 - saturate(hitT / distPx);
+                        float distFade = 1.0 - saturate(t / distPx);
 
                         return float4(hitUV, 1.0, screenFade * distFade);
                     }
 
                     level--;
                 }
-                else
+                else if (occlusion == 2)
                 {
+                    // Tunnelled past even the farthest possible surface in this cell (with
+                    // _Thickness margin) - e.g. the ray has passed behind a thin occluder.
+                    // Nothing here can register a hit; skip to the next cell and try to climb
+                    // back up the hierarchy to resume skipping efficiently.
+                    t = tCell + 0.05;
                     level = min(level + 1, maxLevel);
                 }
-
-                t = tNext + 0.05;
+                else // occlusion == 0
+                {
+                    if (tNear < tCell)
+                    {
+                        // Will enter the occlusion window before leaving this cell - jump
+                        // straight to it and re-classify there next iteration.
+                        t = tNear + 0.05;
+                    }
+                    else
+                    {
+                        // Clear for the remainder of this cell - climb the hierarchy.
+                        t = tCell + 0.05;
+                        level = min(level + 1, maxLevel);
+                    }
+                }
             }
 
             return float4(0, 0, 0, 0);
@@ -481,7 +557,7 @@ Shader "Hidden/SSR"
             
             // Ray march / Hi-Z trace
 #if defined(_SSR_TRACING_HIZ)
-            float4 hitResult = HiZTrace(viewPos, reflectDir, uv);
+            float4 hitResult = HiZTrace(viewPos, reflectDir);
 #else
             float4 hitResult = RayMarch(viewPos, reflectDir, uv);
 #endif

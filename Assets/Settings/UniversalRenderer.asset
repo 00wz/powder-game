@@ -157,17 +157,17 @@ MonoBehaviour:
     renderPassEvent: 500
     tracingMethod: 1
     maxSteps: 128
-    maxDistance: 36.9
-    thickness: 1.27
-    jitterStrength: 0.154
+    maxDistance: 51.1
+    thickness: 0.039
+    jitterStrength: 0
     intensity: 1
-    edgeFade: 0.1
+    edgeFade: 0.144
     passCount: 1
-    useSkyboxFallback: 0
+    useSkyboxFallback: 1
     fallbackCubemap: {fileID: 0}
-    maxMipLevel: 12
+    maxMipLevel: 6
     pyramidResolutionScale: 1
     debugMode: 0
-    debugMipIndex: 2
+    debugMipIndex: 0
   m_Shader: {fileID: 4800000, guid: eb04468f025cc70409a45a12e97226d4, type: 3}
   m_HiZShader: {fileID: 4800000, guid: 5d0c68aa56f1eca4cb12bf5a6c0d7fe8, type: 3}
