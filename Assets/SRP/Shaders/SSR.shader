@@ -186,9 +186,22 @@ Shader "Hidden/SSR"
                 
                 // Проверяем пересечение: луч прошёл за поверхность
                 float depthDiff = rayLinearDepth - sceneLinearDepth;
-                
-                if (prevDepthDiff <= 0 && depthDiff > 0 && depthDiff < _Thickness) // TODO: можно добавить динамическую толщину в зависимости от угла
+
+                if (depthDiff > 0 && depthDiff < _Thickness) // TODO: можно добавить динамическую толщину в зависимости от угла
                 {
+                    if (prevDepthDiff > 0)
+                    {
+                        // На предыдущем шаге луч уже был "за" сценой (либо тоже в пределах
+                        // thickness-окна без подтверждённого пересечения, либо ушёл глубже
+                        // thickness и теперь вынырнул обратно в окно) - это не свежий подход
+                        // "спереди", а продолжение уже "испорченного" состояния (см.
+                        // approachedFromClear в HiZTrace - тот же принцип). Глубина буфера
+                        // хранит только лицевую поверхность, так что мы не знаем, что там на
+                        // самом деле происходит - прерываем трассировку вместо того, чтобы
+                        // принять сомнительное пересечение или молча продолжать шагать.
+                        return float4(0, 0, 2.0, 0);
+                    }
+
                     // Нашли пересечение! Binary search refinement в view space
                     float3 lo = prevViewPos;
                     float3 hi = currentViewPos;
@@ -240,7 +253,12 @@ Shader "Hidden/SSR"
                 prevDepthDiff = depthDiff;
                 currentViewPos += viewDir * viewStepSize;
             }
-            
+
+            // Чистый промах: бюджет шагов исчерпан либо луч вышел за экран, ни разу не
+            // столкнувшись с "испорченным" (не-спереди) пересечением - симметрично тому, что
+            // HiZTrace не проверяет tunnelled-состояние в своих собственных точках выхода по
+            // границе экрана/бюджету, а прерывается только в момент обнаружения самого
+            // некорректного пересечения (см. выше).
             return float4(0, 0, 0, 0);
         }
 
@@ -318,6 +336,33 @@ Shader "Hidden/SSR"
             return max((targetDepth - startDepth) * invDeltaDepth * distPx, currentT);
         }
 
+        // Complementary to HiZSolveDepthCrossing: given the ray is CURRENTLY behind
+        // `targetDepth`, solves for the t (>= currentT) at which it will surface back out of
+        // that state, or returns a large sentinel if it stays behind for the rest of the ray.
+        // A ray moving away from the camera that is already behind a given depth stays behind
+        // it forever (monotonically decreasing depth never comes back) - only a ray curving
+        // back toward the camera can surface out again, which is exactly the direction
+        // HiZSolveDepthCrossing treats as "never enters". Without this, a coarse cell's
+        // "tunnelled through" state (see HiZClassifyOcclusion) would be assumed to persist
+        // until the ray leaves the cell in XY, silently skipping over the point where a
+        // toward-camera ray re-emerges mid-cell.
+        float HiZSolveDepthExit(float currentT, float startDepth, float targetDepth,
+                                 float deltaDepth, float invDeltaDepth, float distPx)
+        {
+            if (abs(deltaDepth) <= 1e-8)
+                return 1e8; // Depth never changes - if already behind, stays behind forever.
+
+#if UNITY_REVERSED_Z
+            bool recedingFromTarget = deltaDepth > 0.0;
+#else
+            bool recedingFromTarget = deltaDepth < 0.0;
+#endif
+            if (!recedingFromTarget)
+                return 1e8;
+
+            return max((targetDepth - startDepth) * invDeltaDepth * distPx, currentT);
+        }
+
         // Thickness-aware occlusion classification for a Hi-Z cell. A depth buffer only ever
         // stores the front-facing surface at each texel, with no information about how far
         // back solid geometry actually extends - treating that single value as an infinitely
@@ -337,26 +382,40 @@ Shader "Hidden/SSR"
         //
         // Returns:
         //   0 = not reached yet   - ray is still in front of the near plane (definitely clear
-        //                           so far); `outNearT` receives the future t (>= currentT) at
-        //                           which it would enter the window, for skipping ahead to.
-        //   1 = inside the window - within _Thickness of some surface in the cell; `outNearT`
+        //                           so far); `outEventT` receives the future t (>= currentT) at
+        //                           which it would enter the window, for skipping ahead to (or
+        //                           a large sentinel if it never will - see
+        //                           HiZSolveDepthCrossing).
+        //   1 = inside the window - within _Thickness of some surface in the cell; `outEventT`
         //                           equals currentT (the window is entered right now).
         //   2 = tunnelled through - behind even minMax.x by more than _Thickness; nothing here
-        //                           can register a hit. `outNearT` equals currentT.
+        //                           can register a hit. `outEventT` receives the future t at
+        //                           which the ray would surface back out of this state (only
+        //                           possible for a ray curving toward the camera), or a large
+        //                           sentinel if it stays tunnelled through for the rest of the
+        //                           ray - see HiZSolveDepthExit. Callers MUST treat this
+        //                           symmetrically with case 0 (compare against the cell's XY
+        //                           exit t) rather than assuming it always persists to the
+        //                           cell boundary.
         int HiZClassifyOcclusion(float currentT, float currentDepth, float2 minMax,
                                   float startDepth, float deltaDepth, float invDeltaDepth, float distPx,
-                                  out float outNearT)
+                                  out float outEventT)
         {
             if (!HiZIsBehindOrAt(currentDepth, minMax.y))
             {
-                outNearT = HiZSolveDepthCrossing(currentT, currentDepth, minMax.y, startDepth, deltaDepth, invDeltaDepth, distPx);
+                outEventT = HiZSolveDepthCrossing(currentT, currentDepth, minMax.y, startDepth, deltaDepth, invDeltaDepth, distPx);
                 return 0;
             }
 
-            outNearT = currentT;
-
             float farThreshold = EyeDepthToRawDepth(GetLinearEyeDepth(minMax.x) + _Thickness);
-            return HiZIsBehindOrAt(currentDepth, farThreshold) ? 2 : 1;
+            if (!HiZIsBehindOrAt(currentDepth, farThreshold))
+            {
+                outEventT = currentT;
+                return 1;
+            }
+
+            outEventT = HiZSolveDepthExit(currentT, startDepth, farThreshold, deltaDepth, invDeltaDepth, distPx);
+            return 2;
         }
 
         // Clamps the view-space marching distance so viewOrigin + viewDir * distance never
@@ -415,6 +474,20 @@ Shader "Hidden/SSR"
             int maxLevel = max((int)_HiZLevelCount - 1, 0);
             int level = 0;
 
+            // Tracks whether the ray's approach to whatever occlusion state it's currently in
+            // was "clean" (confirmed clear beforehand) or "tainted" (it just surfaced out of a
+            // tunnelled-through state - see the occlusion == 2 branch below). A depth buffer
+            // only stores front-facing surfaces, so a hit found immediately after surfacing
+            // from tunnelling means the ray approached it from behind/inside, not from the
+            // front - there is no reliable way to know what that means physically (the ray
+            // could still be inside solid geometry, or could legitimately be in open space),
+            // so such hits are rejected and the trace aborts rather than guessing.
+            //
+            // Only updated when t actually advances (jumping to tEvent or climbing to tCell) -
+            // NOT during a pure level-- descent at the same t, so a multi-level descent chain
+            // while investigating the same approach event never resets it.
+            bool approachedFromClear = true;
+
             const int HIZ_MAX_ITER = 128;
             int iterCount = min((int)_MaxSteps, HIZ_MAX_ITER);
 
@@ -426,7 +499,7 @@ Shader "Hidden/SSR"
 
                 float2 pos = startPx + dir * t;
                 if (pos.x < 0.0 || pos.x >= realSize.x || pos.y < 0.0 || pos.y >= realSize.y)
-                    return float4(0, 0, 0, 0);
+                    return float4(0, 0, 0, 0); // Clean miss: ray left the visible screen.
 
                 // UV is resolution-independent, so it must always be normalized against the
                 // BASE (level 0) padded canvas size, never the current level's own (smaller)
@@ -436,9 +509,9 @@ Shader "Hidden/SSR"
                 float2 minMax = SampleHiZLevel(uvPyramid, level);
 
                 float currentDepth = lerp(startSS.z, endSS.z, saturate(t / distPx));
-                float tNear;
+                float tEvent;
                 int occlusion = HiZClassifyOcclusion(t, currentDepth, minMax, startSS.z,
-                                                      deltaDepth, invDeltaDepth, distPx, tNear);
+                                                      deltaDepth, invDeltaDepth, distPx, tEvent);
 
                 // t at which the ray leaves the current cell's XY footprint.
                 float cellSize = (float)(1u << level);
@@ -452,6 +525,9 @@ Shader "Hidden/SSR"
                     // Within _Thickness of some surface in the cell - candidate hit.
                     if (level == 0)
                     {
+                        if (!approachedFromClear)
+                            return float4(0, 0, 2.0, 0); // Aborted: approached from behind/inside.
+
                         float2 hitUV = pos / realSize;
 
                         float2 edgeFade = smoothstep(0, _EdgeFade, hitUV) *
@@ -468,18 +544,35 @@ Shader "Hidden/SSR"
                 {
                     // Tunnelled past even the farthest possible surface in this cell (with
                     // _Thickness margin) - e.g. the ray has passed behind a thin occluder.
-                    // Nothing here can register a hit; skip to the next cell and try to climb
-                    // back up the hierarchy to resume skipping efficiently.
-                    t = tCell + 0.05;
-                    level = min(level + 1, maxLevel);
+                    // Symmetric to the occlusion == 0 handling below: a ray curving toward the
+                    // camera can surface back out of this state before leaving the cell (see
+                    // HiZSolveDepthExit), so that must be checked for explicitly rather than
+                    // assuming the tunnelled state always persists to the cell boundary.
+                    approachedFromClear = false;
+
+                    if (tEvent < tCell)
+                    {
+                        // Surfaces back out mid-cell - re-examine there, same level (we have
+                        // not left the cell "clear").
+                        t = tEvent + 0.05;
+                    }
+                    else
+                    {
+                        // Stays tunnelled through for the rest of this cell - skip past it and
+                        // climb back up the hierarchy to resume skipping efficiently.
+                        t = tCell + 0.05;
+                        level = min(level + 1, maxLevel);
+                    }
                 }
                 else // occlusion == 0
                 {
-                    if (tNear < tCell)
+                    approachedFromClear = true;
+
+                    if (tEvent < tCell)
                     {
                         // Will enter the occlusion window before leaving this cell - jump
                         // straight to it and re-classify there next iteration.
-                        t = tNear + 0.05;
+                        t = tEvent + 0.05;
                     }
                     else
                     {
@@ -490,7 +583,7 @@ Shader "Hidden/SSR"
                 }
             }
 
-            return float4(0, 0, 0, 0);
+            return float4(0, 0, 0, 0); // Clean miss: search budget exhausted.
         }
 
         half3 GetSkyBoxColor(float3 dirVS)
@@ -562,16 +655,23 @@ Shader "Hidden/SSR"
             float4 hitResult = RayMarch(viewPos, reflectDir, uv);
 #endif
             
+            // Aborted (статус 2): трассировка обнаружила, что подошла к пересечению "с
+            // изнанки"/изнутри геометрии (см. HiZTrace/RayMarch) и не смогла его достоверно
+            // разрешить. Реальность за точкой обрыва неизвестна - в частности, нельзя
+            // показывать skybox fallback, иначе объект будет выглядеть "просвечивающим".
+            if (hitResult.z > 1.5)
+                return sceneColor;
+
             half3 reflectionColor;
             float reflectionStrength;
-            
-            if (hitResult.z > 0.5) // Есть пересечение с геометрией
+
+            if (hitResult.z > 0.5) // Есть пересечение с геометрией (статус 1)
             {
                 float2 hitUV = hitResult.xy;
                 float fade = hitResult.w;
                 
                 // Сэмплируем цвет отражения из screen
-                reflectionColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, hitUV).rgb;
+                reflectionColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_PointClamp, hitUV).rgb;
                 if(_SSR_UseSkyboxFallback > 0.5)
                 {
                     reflectionColor = lerp(GetSkyBoxColor(reflectDir), reflectionColor, fade);
