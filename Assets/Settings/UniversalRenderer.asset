@@ -155,9 +155,9 @@ MonoBehaviour:
   m_Active: 1
   settings:
     renderPassEvent: 500
-    tracingMethod: 0
+    tracingMethod: 1
     maxSteps: 128
-    maxDistance: 1.7
+    maxDistance: 100
     thickness: 0.04
     jitterStrength: 1
     intensity: 1

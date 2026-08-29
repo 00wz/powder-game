@@ -62,68 +62,9 @@ Shader "Hidden/SSR"
             return SAMPLE_TEXTURE2D_LOD(_CameraDepthTexture, sampler_CameraDepthTexture, uv, 0).r;
         }
 
-        // Получаем линейную глубину с учётом типа камеры
-        float GetLinearDepth01(float rawDepth)
-        {
-            if (unity_OrthoParams.w > 0.5) // Orthographic
-            {
-                #if UNITY_REVERSED_Z
-                    return 1.0 - rawDepth;
-                #else
-                    return rawDepth;
-                #endif
-            }
-            return Linear01Depth(rawDepth, _ZBufferParams);
-        }
-
-        float GetLinearEyeDepth(float rawDepth)
-        {
-            if (unity_OrthoParams.w > 0.5) // Orthographic
-            {
-                float linear01 = GetLinearDepth01(rawDepth);
-                return lerp(_ProjectionParams.y, _ProjectionParams.z, linear01);
-            }
-            return LinearEyeDepth(rawDepth, _ZBufferParams);
-        }
-
-        // Inverse of GetLinearEyeDepth: converts a linear eye-space depth back into raw
-        // device depth. Used by the Hi-Z thickness test, which needs to add a fixed
-        // world-space _Thickness to a stored raw depth value - eye depth is the only one of
-        // the two spaces where "add a fixed distance" is meaningful, since raw depth is
-        // highly non-linear in true distance.
-        float EyeDepthToRawDepth(float eyeDepth)
-        {
-            if (unity_OrthoParams.w > 0.5) // Orthographic
-            {
-                float linear01 = (eyeDepth - _ProjectionParams.y) / (_ProjectionParams.z - _ProjectionParams.y);
-                #if UNITY_REVERSED_Z
-                    return 1.0 - linear01;
-                #else
-                    return linear01;
-                #endif
-            }
-            float invEye = 1.0 / max(eyeDepth, 1e-6);
-            return (invEye - _ZBufferParams.w) / _ZBufferParams.z;
-        }
-
-        // Реконструкция позиции в View Space из UV и глубины
-        float3 ReconstructViewPosition(float2 uv, float depth)
-        {
-            // undo ComputeScreenPos Y-flip
-            if (_ProjectionParams.x < 0)
-            {
-                uv.y = 1.0 - uv.y;
-            }
-            
-            float4 clipPos;
-            clipPos.xy = uv * 2.0 - 1.0;
-
-            clipPos.z = depth;
-            clipPos.w = 1.0;
-
-            float4 viewPos = mul(UNITY_MATRIX_I_P, clipPos);
-            return viewPos.xyz / viewPos.w;
-        }
+        // GetLinearDepth01 / GetLinearEyeDepth / EyeDepthToRawDepth / ReconstructViewPosition
+        // перенесены в HiZCommon.hlsl (уже подключён выше) - переиспользуются также в
+        // HiZDepthPyramid.shader.
 
         // Проекция View Space → Screen UV
         float3 ViewToScreen(float3 viewPos)
@@ -671,7 +612,7 @@ Shader "Hidden/SSR"
                 float fade = hitResult.w;
                 
                 // Сэмплируем цвет отражения из screen
-                reflectionColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_PointClamp, hitUV).rgb;
+                reflectionColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, hitUV).rgb;
                 if(_SSR_UseSkyboxFallback > 0.5)
                 {
                     reflectionColor = lerp(GetSkyBoxColor(reflectDir), reflectionColor, fade);

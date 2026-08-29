@@ -51,4 +51,71 @@ float2 SampleHiZLevel(float2 uv, int level)
     return texel.rg;
 }
 
+// Shared depth-space conversions (moved here from SSR.shader so HiZDepthPyramid.shader can
+// reuse them too, e.g. for its own normal-aware min/max widening - see InitFrag).
+
+// Linearized [0,1] depth (0 = near, 1 = far), accounting for camera type.
+float GetLinearDepth01(float rawDepth)
+{
+    if (unity_OrthoParams.w > 0.5) // Orthographic
+    {
+        #if UNITY_REVERSED_Z
+            return 1.0 - rawDepth;
+        #else
+            return rawDepth;
+        #endif
+    }
+    return Linear01Depth(rawDepth, _ZBufferParams);
+}
+
+// Linear eye-space depth, accounting for camera type.
+float GetLinearEyeDepth(float rawDepth)
+{
+    if (unity_OrthoParams.w > 0.5) // Orthographic
+    {
+        float linear01 = GetLinearDepth01(rawDepth);
+        return lerp(_ProjectionParams.y, _ProjectionParams.z, linear01);
+    }
+    return LinearEyeDepth(rawDepth, _ZBufferParams);
+}
+
+// Reconstructs the view-space position from a screen UV and raw device depth.
+float3 ReconstructViewPosition(float2 uv, float depth)
+{
+    // undo ComputeScreenPos Y-flip
+    if (_ProjectionParams.x < 0)
+    {
+        uv.y = 1.0 - uv.y;
+    }
+
+    float4 clipPos;
+    clipPos.xy = uv * 2.0 - 1.0;
+
+    clipPos.z = depth;
+    clipPos.w = 1.0;
+
+    float4 viewPos = mul(UNITY_MATRIX_I_P, clipPos);
+    return viewPos.xyz / viewPos.w;
+}
+
+// Inverse of GetLinearEyeDepth: converts a linear eye-space depth back into raw device
+// depth. Used wherever a fixed world-space distance (e.g. _Thickness, or a pixel's local
+// depth extent) needs to be applied to a stored raw depth value - eye depth is the only one
+// of the two spaces where "add a fixed distance" is meaningful, since raw depth is highly
+// non-linear in true distance.
+float EyeDepthToRawDepth(float eyeDepth)
+{
+    if (unity_OrthoParams.w > 0.5) // Orthographic
+    {
+        float linear01 = (eyeDepth - _ProjectionParams.y) / (_ProjectionParams.z - _ProjectionParams.y);
+        #if UNITY_REVERSED_Z
+            return 1.0 - linear01;
+        #else
+            return linear01;
+        #endif
+    }
+    float invEye = 1.0 / max(eyeDepth, 1e-6);
+    return (invEye - _ZBufferParams.w) / _ZBufferParams.z;
+}
+
 #endif
