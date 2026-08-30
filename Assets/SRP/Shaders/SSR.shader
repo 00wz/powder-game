@@ -591,7 +591,21 @@ Shader "Hidden/SSR"
             
             // Ray march / Hi-Z trace
 #if defined(_SSR_TRACING_HIZ)
-            float4 hitResult = HiZTrace(viewPos, reflectDir);
+            // The Hi-Z pyramid's mip 0 stores a WIDENED (min,max) window for this exact
+            // texel (see HiZDepthPyramid.shader's EstimateDepthExtent), to correctly handle
+            // grazing-angle surfaces. If the ray still launched from the exact per-pixel
+            // depth, its starting position would sit BEHIND the pyramid's own claimed nearest
+            // bound for this same texel, and HiZTrace's 1-pixel self-intersection margin is
+            // no longer enough to escape it - a false self-intersection with the ray's own
+            // origin (blind spots / missing reflections), worst for rays travelling away from
+            // the camera on grazing surfaces, exactly where the widening is largest. Launch
+            // the ray from this same texel's own near bound instead, restoring the invariant
+            // "ray start depth == this texel's own max" that the self-intersection margin was
+            // designed around.
+            float2 uvPyramid0 = uv * (_HiZScreenSize.xy / _HiZMipInfo[0].xy);
+            float2 originMinMax = SampleHiZLevel(uvPyramid0, 0);
+            float3 hizViewOrigin = ReconstructViewPosition(uv, originMinMax.y);
+            float4 hitResult = HiZTrace(hizViewOrigin, reflectDir);
 #else
             float4 hitResult = RayMarch(viewPos, reflectDir, uv);
 #endif
