@@ -71,90 +71,6 @@ Shader "Hidden/HiZDepthPyramid"
 #endif
         }
 
-        // At grazing angles (surface normal near-perpendicular to the view direction), depth
-        // changes very fast from one screen pixel to the next, so a mip-0 texel that just
-        // stores a single depth sample is a poor stand-in for the small patch of surface it
-        // actually covers - a ray that should legitimately land on this texel can miss it by
-        // more than _Thickness, which shows up as a periodic banding/striping pattern on
-        // grazing surfaces. To fix this we widen the stored (min, max) using the fragment's
-        // own normal to estimate how much the surface's depth plausibly varies across its own
-        // pixel footprint.
-        //
-        // This deliberately does NOT sample neighboring texels (e.g. via ddx/ddy of depth):
-        // screen-space derivatives are computed from the actual rasterized 2x2 quad, so at a
-        // genuine silhouette edge (this pixel's object against unrelated background/another
-        // object) they report a huge, real jump that has nothing to do with surface slope -
-        // widening by that amount would corrupt the pyramid at every object edge in the scene,
-        // not just at grazing angles. Instead we ask a purely local, single-pixel question:
-        // "if this fragment's surface were an infinite plane (this position, this normal), how
-        // far would its depth extend across one pixel's angular footprint?" - which depends
-        // only on this fragment's own normal and depth, so a silhouette next door cannot
-        // contaminate it.
-        //
-        // IMPORTANT: under perspective projection, the neighboring screen pixel corresponds to
-        // a DIVERGING ray from the camera origin, not a parallel shift of this ray. An earlier
-        // version of this function approximated the depth delta using only the plane's local
-        // slope (dz/dx = -N.x/N.z, from the plane equation N.(P-P0)=0 alone) - that equation
-        // answers "how does Z change moving ALONG the plane", which is only the same question
-        // as "where does the neighboring pixel's ray cross the plane" when the pixel sits on
-        // the view axis (P0.xy == 0). Off-axis - which is most of the screen, and exactly
-        // where a grazing surface spans much of the frame - the two diverge substantially, so
-        // that version under/over-estimated the extent and left visible banding. The fix below
-        // solves the actual ray/plane intersection for the neighboring rays instead of just
-        // the local slope.
-        float2 EstimateDepthExtent(float2 uv, float rawDepth)
-        {
-            float3 normalWS = SampleSceneNormals(uv);
-            float3 N = normalize(mul((float3x3)UNITY_MATRIX_V, normalWS));
-            float3 P0 = ReconstructViewPosition(uv, rawDepth);
-            float eyeDepth0 = -P0.z;
-
-            float2 realSize = _SrcMipInfo.xy;
-            float2 halfExtentEyeXY;
-
-            if (unity_OrthoParams.w > 0.5)
-            {
-                // Orthographic: all rays are parallel, so "the neighboring pixel's ray" is
-                // exactly "this ray shifted by one pixel's world size at constant depth" -
-                // the local-slope shortcut is exact here, no off-axis correction needed.
-                float2 orthoSize = float2(2.0 / UNITY_MATRIX_P._m00, 2.0 / UNITY_MATRIX_P._m11);
-                float2 pixelWorldSize = orthoSize / realSize;
-                float safeNz = abs(N.z) > 1e-4 ? N.z : (N.z >= 0.0 ? 1e-4 : -1e-4);
-                halfExtentEyeXY = abs(N.xy / safeNz) * pixelWorldSize;
-            }
-            else
-            {
-                // Perspective: solve the exact ray/plane intersection for the X and Y
-                // neighbor rays. Both are derived algebraically from P0 - no extra
-                // ReconstructViewPosition (matrix multiply) calls needed.
-                float2 tanHalfFov = float2(1.0 / UNITY_MATRIX_P._m00, 1.0 / UNITY_MATRIX_P._m11);
-                float2 pixelWorldSize = 2.0 * tanHalfFov * eyeDepth0 / realSize;
-
-                float3 dir0 = P0 / eyeDepth0; // ray direction, Z-component normalized to -1
-                float nDotP0 = dot(N, P0);
-
-                float3 dirX = dir0 + float3(pixelWorldSize.x / eyeDepth0, 0.0, 0.0);
-                float3 dirY = dir0 + float3(0.0, pixelWorldSize.y / eyeDepth0, 0.0);
-
-                float denomX = dot(N, dirX);
-                float denomY = dot(N, dirY);
-                // Guarded explicitly (not left to saturate() at the end) - a near-zero
-                // denominator means the neighboring ray is nearly parallel to the plane
-                // (grazing), which is exactly the case being estimated for, not one to ignore.
-                float safeDenomX = abs(denomX) > 1e-6 ? denomX : (denomX >= 0.0 ? 1e-6 : -1e-6);
-                float safeDenomY = abs(denomY) > 1e-6 ? denomY : (denomY >= 0.0 ? 1e-6 : -1e-6);
-
-                float2 tXY = nDotP0 / float2(safeDenomX, safeDenomY);
-                halfExtentEyeXY = abs(tXY - eyeDepth0);
-            }
-
-            float halfExtentEye = 0.5 * (halfExtentEyeXY.x + halfExtentEyeXY.y);
-
-            float rawA = EyeDepthToRawDepth(eyeDepth0 - halfExtentEye);
-            float rawB = EyeDepthToRawDepth(eyeDepth0 + halfExtentEye);
-            return float2(min(rawA, rawB), max(rawA, rawB));
-        }
-
         float2 InitFrag(Varyings input) : SV_Target
         {
             // input.texcoord spans the padded (power-of-two) mip 0 canvas. Only the
@@ -182,9 +98,15 @@ Shader "Hidden/HiZDepthPyramid"
             isSky = d > 0.9999;
 #endif
 
-            float2 extent = isSky ? float2(d, d) : EstimateDepthExtent(uv, d);
-            float minD = min(extent.x, d);
-            float maxD = max(extent.y, d);
+            float minD = d;
+            float maxD = d;
+            if (!isSky)
+            {
+                float rawMin, rawMax;
+                EstimateFragmentDepthRange(uv, d, _SrcMipInfo.xy, rawMin, rawMax);
+                minD = min(rawMin, d);
+                maxD = max(rawMax, d);
+            }
             return float2(saturate(minD), saturate(maxD));
         }
 

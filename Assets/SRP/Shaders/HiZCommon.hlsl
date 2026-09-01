@@ -118,4 +118,90 @@ float EyeDepthToRawDepth(float eyeDepth)
     return (invEye - _ZBufferParams.w) / _ZBufferParams.z;
 }
 
+// Estimates the raw device depth range a single fragment's pixel footprint actually spans,
+// by treating the fragment as an infinite plane (its own view-space position + normal) and
+// solving where the two screen-space corners diagonally aligned with the plane's slope
+// (the ones where depth deviates the most) intersect that plane. A depth buffer only ever
+// stores one point-sample per pixel, which is a poor stand-in for a fragment's true extent
+// at grazing angles (surface normal near-perpendicular to the view direction): depth then
+// changes very fast from one screen pixel to the next, so a single stored value undersells
+// how far a legitimate ray hit can land from it - producing periodic banding/striping in SSR
+// (a ray that should land on this fragment misses by more than _Thickness).
+//
+// This deliberately does NOT sample neighboring texels (e.g. via ddx/ddy of depth): screen-
+// space derivatives are computed from the actual rasterized 2x2 quad, so at a genuine
+// silhouette edge (this pixel's object against unrelated background/another object) they
+// report a huge, real jump that has nothing to do with surface slope - widening by that
+// amount would corrupt the estimate at every object edge in the scene, not just at grazing
+// angles. This function only ever depends on THIS fragment's own normal and depth, so a
+// silhouette next door cannot contaminate it.
+//
+// Math: the ray/plane intersection for a view-space ray of direction `dir` against the plane
+// (P0, N) is t = dot(N,P0) / dot(N,dir). The numerator is fixed; the denominator is LINEAR in
+// the ray direction offset (dot product), so offsetting by half a pixel in X changes it by
+// deltaX = 0.5*N.x*pixelWorldSize.x/eyeDepth0 (deltaY analogously), and offsetting by both
+// X and Y at once (a footprint corner) changes it by exactly +-deltaX +-deltaY - no need to
+// build the diagonal ray explicitly. Since t is monotonic in the denominator (for a
+// same-signed denominator), the extrema over all 4 corners occur at just the 2 corners where
+// the denominator is most different from its unperturbed value, i.e. where both deltas share
+// the sign of N.x/N.y (and the opposite) - so only two candidate depths need to be solved.
+//
+// Requires DeclareNormalsTexture.hlsl (for SampleSceneNormals) to be included before this
+// file by the caller - true today for both SSR.shader and HiZDepthPyramid.shader.
+void EstimateFragmentDepthRange(float2 uv, float rawDepth, float2 screenSizePixels, out float rawMin, out float rawMax)
+{
+    float3 normalWS = SampleSceneNormals(uv);
+    float3 N = normalize(mul((float3x3)UNITY_MATRIX_V, normalWS));
+    float3 P0 = ReconstructViewPosition(uv, rawDepth);
+    float eyeDepth0 = -P0.z;
+
+    float eyeMin, eyeMax;
+
+    if (unity_OrthoParams.w > 0.5)
+    {
+        // Orthographic: rays are parallel, so "the neighboring pixel's ray" is exactly "this
+        // ray shifted by one pixel's world size at constant depth" - the corner deviation is
+        // then EXACTLY the sum of the two half-pixel axis-aligned slope contributions (no
+        // approximation, unlike the perspective case below).
+        float2 orthoSize = float2(2.0 / UNITY_MATRIX_P._m00, 2.0 / UNITY_MATRIX_P._m11);
+        float2 pixelWorldSize = orthoSize / screenSizePixels;
+        float safeNz = abs(N.z) > 1e-4 ? N.z : (N.z >= 0.0 ? 1e-4 : -1e-4);
+        float2 slope = N.xy / safeNz; // dz/dx, dz/dy along the plane
+        float halfExtentEye = abs(slope.x) * 0.5 * pixelWorldSize.x + abs(slope.y) * 0.5 * pixelWorldSize.y;
+        eyeMin = eyeDepth0 - halfExtentEye;
+        eyeMax = eyeDepth0 + halfExtentEye;
+    }
+    else
+    {
+        float2 tanHalfFov = float2(1.0 / UNITY_MATRIX_P._m00, 1.0 / UNITY_MATRIX_P._m11);
+        float2 pixelWorldSize = 2.0 * tanHalfFov * eyeDepth0 / screenSizePixels;
+
+        float3 dir0 = P0 / eyeDepth0; // ray direction, Z-component normalized to -1
+        float denom0 = dot(N, dir0);
+        float nDotP0 = dot(N, P0);
+
+        float halfDenomSpread = 0.5 * (abs(N.x) * pixelWorldSize.x + abs(N.y) * pixelWorldSize.y) / eyeDepth0;
+        float denomHigh = denom0 + halfDenomSpread;
+        float denomLow = denom0 - halfDenomSpread;
+        // Guarded explicitly (not left to a saturate() at the end) - a near-zero denominator
+        // means that corner's ray is nearly parallel to the plane (grazing), which is exactly
+        // the case being estimated for, not one to silently ignore.
+        float safeDenomHigh = abs(denomHigh) > 1e-6 ? denomHigh : (denomHigh >= 0.0 ? 1e-6 : -1e-6);
+        float safeDenomLow = abs(denomLow) > 1e-6 ? denomLow : (denomLow >= 0.0 ? 1e-6 : -1e-6);
+
+        float tHigh = nDotP0 / safeDenomHigh;
+        float tLow = nDotP0 / safeDenomLow;
+
+        eyeMin = min(min(tHigh, tLow), eyeDepth0);
+        eyeMax = max(max(tHigh, tLow), eyeDepth0);
+    }
+
+    // EyeDepthToRawDepth's monotonic direction flips with UNITY_REVERSED_Z, so sort the
+    // converted pair explicitly rather than assuming eyeMin maps to rawMin.
+    float rA = EyeDepthToRawDepth(eyeMin);
+    float rB = EyeDepthToRawDepth(eyeMax);
+    rawMin = min(rA, rB);
+    rawMax = max(rA, rB);
+}
+
 #endif
