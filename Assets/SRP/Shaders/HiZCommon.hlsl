@@ -196,6 +196,25 @@ void EstimateFragmentDepthRange(float2 uv, float rawDepth, float2 screenSizePixe
         eyeMax = max(max(tHigh, tLow), eyeDepth0);
     }
 
+    // EyeDepthToRawDepth's perspective branch is raw = (1/eyeDepth - w)/z, which has a
+    // singularity at eyeDepth = 0; its near-zero guard (max(eyeDepth, 1e-6)) only stops a
+    // literal division by zero, it does not distinguish "genuinely close to the camera" from
+    // a NEGATIVE eyeDepth - which the extreme-grazing corner solve above can in fact produce,
+    // when denom's sign is close to flipping. A negative eyeDepth silently reinterpreted as
+    // "≈0, i.e. at the camera" can convert to a raw depth on the WRONG side of [0,1] depending
+    // on UNITY_REVERSED_Z, and a saturate() afterwards cannot fix that: saturate() has no
+    // notion of which endpoint (0 or 1) is actually "near" for the active convention, so it
+    // would clamp a near-plane violation to the FAR endpoint instead. Clamping here, in eye
+    // space, to the same [near, far] bounds every legitimate surface point already satisfies,
+    // keeps EyeDepthToRawDepth strictly inside its well-behaved monotonic domain, so the
+    // result is correct regardless of convention. (The far side has no equivalent singularity
+    // - eyeDepth -> infinity maps to a finite raw value already on the correct side - but is
+    // clamped too, for symmetry and because it's free.)
+    float nearPlane = _ProjectionParams.y;
+    float farPlane = _ProjectionParams.z;
+    eyeMin = clamp(eyeMin, nearPlane, farPlane);
+    eyeMax = clamp(eyeMax, nearPlane, farPlane);
+
     // EyeDepthToRawDepth's monotonic direction flips with UNITY_REVERSED_Z, so sort the
     // converted pair explicitly rather than assuming eyeMin maps to rawMin.
     float rA = EyeDepthToRawDepth(eyeMin);
