@@ -74,6 +74,10 @@ public class SSRFeature : ScriptableRendererFeature
         [Range(0.25f, 1f)]
         public float pyramidResolutionScale = 1f;
 
+        [Tooltip("Насколько сильно подавляется расширение диапазона глубины фрагмента (EstimateFragmentDepthRange) там, где нормаль быстро меняется от текселя к текселю - на контурах округлых объектов. 0 = подавление выключено (может давать \"иглы\" на контурах отражений округлых объектов); больше - подавление сильнее и начинается при меньшей кривизне (может ослабить фикс полос на пологих поверхностях)")]
+        [Range(0f, 10f)]
+        public float hiZCurvatureSensitivity = 2f;
+
         [Header("Hi-Z Debug")]
         [Tooltip("Показать содержимое Hi-Z пирамиды вместо результата SSR (левая половина экрана = min, правая = max)")]
         public HiZDebugMode debugMode = HiZDebugMode.Off;

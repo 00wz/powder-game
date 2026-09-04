@@ -31,6 +31,12 @@ float4 _HiZMipInfo[HIZ_MAX_MIPS];
 // real size, not the padded per-level sizes in _HiZMipInfo.
 float4 _HiZScreenSize;
 
+// Controls how aggressively EstimateFragmentDepthRange() below damps its planar depth-range
+// estimate where the surface normal changes quickly from texel to texel (curved silhouettes) -
+// see the comment on that function. Set once per frame (identical for every pyramid draw), not
+// a per-draw MaterialPropertyBlock value.
+float _HiZCurvatureSensitivity;
+
 // Returns (min, max) raw device depth stored at the given pyramid level.
 // `level` must already be clamped to [0, _HiZLevelCount - 1] by the caller.
 float2 SampleHiZLevel(float2 uv, int level)
@@ -146,6 +152,33 @@ float EyeDepthToRawDepth(float eyeDepth)
 // the denominator is most different from its unperturbed value, i.e. where both deltas share
 // the sign of N.x/N.y (and the opposite) - so only two candidate depths need to be solved.
 //
+// The planar-extrapolation model above is only valid where the surface actually stays
+// (approximately) planar across the pixel's footprint. It breaks down at the screen-space
+// silhouette of a CURVED object (e.g. a sphere): there too N is near-perpendicular to the
+// view direction (same denom0 -> 0 condition the grazing-floor case relies on), but unlike an
+// infinite flat surface, the real geometry curves away and terminates within a couple of
+// pixels - so the extrapolated range balloons towards the entire [near, far] span for that one
+// texel. HiZClassifyOcclusion() then treats ANY ray depth as "within range" the moment its
+// screen-space path crosses that single texel, at whatever t it currently has - producing a
+// hit trail ("needle") along the ray direction instead of a hit at the true surface.
+//
+// The screen-space derivative of the (already computed) normal is a cheap, direct measure of
+// how fast the surface is curving from texel to texel - near zero on a flat surface (however
+// grazing), large at a curved silhouette (or at a hard edge against unrelated geometry, which
+// deserves the same treatment: a partially-covered silhouette texel has no reliable single
+// normal either). This is safe in a way ddx/ddy of DEPTH was not (see the rejected approach
+// above): that would have WIDENED an already-correct neighbor's estimate using an unrelated
+// object's depth jump; here the derivative only ever narrows this fragment's own already-wide
+// estimate back towards the untouched point sample (eyeDepth0) - i.e. only ever moves toward
+// the safe, pre-fix behavior, never past it.
+float EstimateCurvatureFade(float3 N)
+{
+    float3 dNdx = ddx(N);
+    float3 dNdy = ddy(N);
+    float curvature = length(dNdx) + length(dNdy);
+    return saturate(1.0 - curvature * _HiZCurvatureSensitivity);
+}
+
 // Requires DeclareNormalsTexture.hlsl (for SampleSceneNormals) to be included before this
 // file by the caller - true today for both SSR.shader and HiZDepthPyramid.shader.
 void EstimateFragmentDepthRange(float2 uv, float rawDepth, float2 screenSizePixels, out float rawMin, out float rawMax)
@@ -195,6 +228,14 @@ void EstimateFragmentDepthRange(float2 uv, float rawDepth, float2 screenSizePixe
         eyeMin = min(min(tHigh, tLow), eyeDepth0);
         eyeMax = max(max(tHigh, tLow), eyeDepth0);
     }
+
+    // Damp the extrapolation where the normal is changing quickly (curved silhouettes / hard
+    // edges against unrelated geometry) - see EstimateCurvatureFade(). A fade of 1 (flat
+    // surface, any grazing angle) leaves eyeMin/eyeMax untouched; a fade of 0 (high curvature)
+    // collapses the range back to the single point sample eyeDepth0.
+    float curvatureFade = EstimateCurvatureFade(N);
+    eyeMin = lerp(eyeDepth0, eyeMin, curvatureFade);
+    eyeMax = lerp(eyeDepth0, eyeMax, curvatureFade);
 
     // EyeDepthToRawDepth's perspective branch is raw = (1/eyeDepth - w)/z, which has a
     // singularity at eyeDepth = 0; its near-zero guard (max(eyeDepth, 1e-6)) only stops a

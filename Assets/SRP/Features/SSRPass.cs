@@ -33,6 +33,7 @@ public class SSRPass : ScriptableRenderPass
     private static readonly int HiZMipInfoArrayId = Shader.PropertyToID("_HiZMipInfo");
     private static readonly int HiZDebugMipIndexId = Shader.PropertyToID("_HiZDebugMipIndex");
     private static readonly int HiZScreenSizeId = Shader.PropertyToID("_HiZScreenSize");
+    private static readonly int HiZCurvatureSensitivityId = Shader.PropertyToID("_HiZCurvatureSensitivity");
     private static readonly int[] HiZMipTexIds = BuildHiZMipTexIds();
 
     private const string HiZKeyword = "_SSR_TRACING_HIZ";
@@ -134,6 +135,12 @@ public class SSRPass : ScriptableRenderPass
     // на разных мип-уровнях одновременно.
     private TextureHandle[] BuildHiZPyramid(RenderGraph renderGraph, UniversalCameraData cameraData, out Vector4[] mipInfos, out int levelCount, out Vector4 realSizeOut)
     {
+        // Identical for every draw in the pyramid this frame (only InitFrag's call to
+        // EstimateFragmentDepthRange actually reads it) - a plain Material.SetFloat is safe
+        // here, unlike _SrcMipInfo/_DstMipInfo (see the per-draw MaterialPropertyBlock comment
+        // below), because it never changes between those draws.
+        m_HiZMaterial.SetFloat(HiZCurvatureSensitivityId, m_Settings.hiZCurvatureSensitivity);
+
         var descriptor = cameraData.cameraTargetDescriptor;
         int realWidth = Mathf.Max(1, Mathf.RoundToInt(descriptor.width * m_Settings.pyramidResolutionScale));
         int realHeight = Mathf.Max(1, Mathf.RoundToInt(descriptor.height * m_Settings.pyramidResolutionScale));
